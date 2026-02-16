@@ -1,0 +1,26 @@
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Secrets / local env overrides
+*_env.local.volt
+.env
+.env.*
+
+# Design docs (not part of source distribution)
+*.docx
+
+# Marketing (internal, not part of repo)
+marketing/
