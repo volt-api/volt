@@ -47,6 +47,33 @@ Your API client shouldn't need 500MB of RAM to send a GET request.
 
 ## Install
 
+### Quick Install (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/volt-api/volt/main/scripts/install.sh | bash
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install volt-api/tap/volt
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add volt https://github.com/volt-api/scoop-volt
+scoop install volt
+```
+
+### GitHub Actions
+
+```yaml
+- uses: volt-api/volt-action@v1
+  with:
+    command: test
+```
+
 ### Pre-built Binaries
 
 Download from [Releases](../../releases):
@@ -54,6 +81,7 @@ Download from [Releases](../../releases):
 | Platform | Download |
 |----------|----------|
 | Linux x86_64 | `volt-linux-x86_64` |
+| Linux ARM64 | `volt-linux-aarch64` |
 | macOS ARM | `volt-macos-aarch64` |
 | macOS Intel | `volt-macos-x86_64` |
 | Windows | `volt-windows-x86_64.exe` |
@@ -70,7 +98,7 @@ chmod +x volt && sudo mv volt /usr/local/bin/
 Requires [Zig 0.14.1](https://ziglang.org/download/):
 
 ```bash
-git clone https://github.com/user/volt.git
+git clone https://github.com/volt-api/volt.git
 cd volt
 zig build -Doptimize=ReleaseFast
 # Binary at ./zig-out/bin/volt
@@ -344,7 +372,7 @@ jobs:
 
       - name: Install Volt
         run: |
-          curl -L https://github.com/user/volt/releases/latest/download/volt-linux-x86_64 -o volt
+          curl -L https://github.com/volt-api/volt/releases/latest/download/volt-linux-x86_64 -o volt
           chmod +x volt
           sudo mv volt /usr/local/bin/
 

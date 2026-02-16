@@ -67,6 +67,16 @@ jobs:
         with:
           path: artifacts
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          for dir in */; do
+            cp "$dir"* ../
+          done
+          cd ..
+          sha256sum volt-linux-x86_64 volt-linux-aarch64 volt-macos-x86_64 volt-macos-aarch64 volt-windows-x86_64.exe > checksums.txt
+          cat checksums.txt
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -77,3 +87,32 @@ jobs:
             artifacts/volt-macos-x86_64/volt-macos-x86_64
             artifacts/volt-macos-aarch64/volt-macos-aarch64
             artifacts/volt-windows-x86_64.exe/volt-windows-x86_64.exe
+            checksums.txt
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Homebrew tap update
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run update-formula.yml \
+            --repo volt-api/homebrew-volt \
+            --field version="$VERSION"
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+  update-scoop:
+    name: Update Scoop Manifest
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Scoop bucket update
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run update-manifest.yml \
+            --repo volt-api/scoop-volt \
+            --field version="$VERSION"
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
