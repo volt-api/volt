@@ -272,6 +272,36 @@ fn cmdRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     defer allocator.free(resolved_url);
     request.url = resolved_url;
 
+    // Interpolate headers (resolve env vars + dynamic vars)
+    var resolved_headers = std.ArrayList(VoltFile.Header).init(allocator);
+    defer {
+        for (resolved_headers.items) |rh| {
+            allocator.free(rh.name);
+            allocator.free(rh.value);
+        }
+        resolved_headers.deinit();
+    }
+    for (request.headers.items) |h| {
+        const rn = try env_mgr.interpolate(h.name, &request.variables, allocator);
+        const rv = try env_mgr.interpolate(h.value, &request.variables, allocator);
+        try resolved_headers.append(.{ .name = rn, .value = rv });
+    }
+    request.headers.clearRetainingCapacity();
+    for (resolved_headers.items) |rh| {
+        try request.headers.append(.{ .name = rh.name, .value = rh.value });
+    }
+
+    // Interpolate body (resolve env vars + dynamic vars like {{$uuid}})
+    if (request.body) |body| {
+        const new_body = try env_mgr.interpolate(body, &request.variables, allocator);
+        // Free old body if it was heap-allocated by the parser
+        if (request.body_owned) {
+            allocator.free(body);
+        }
+        request.body = new_body;
+        request.body_owned = true;
+    }
+
     // Apply request signing if --sign flag is set
     if (sign_request) {
         const signing_config = Signing.parseSigningConfig(content);
@@ -1381,6 +1411,8 @@ fn cmdLint(_: std.mem.Allocator, args: []const []const u8) !void {
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         if (entry.kind != .file or !mem.endsWith(u8, entry.name, ".volt")) continue;
+        // Skip config/env files (prefixed with _)
+        if (mem.startsWith(u8, entry.name, "_")) continue;
         total += 1;
 
         const file = dir.openFile(entry.name, .{}) catch {
@@ -1725,15 +1757,15 @@ fn cmdInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         const example_file = std.fs.cwd().createFile("example.volt", .{}) catch return;
         defer example_file.close();
         try example_file.writeAll(
-            \\GET https://httpbin.org/get
-            \\
+            \\name: Example Request
+            \\method: GET
+            \\url: https://httpbin.org/get
             \\headers:
-            \\  Accept: application/json
-            \\  User-Agent: Volt/1.0.0
-            \\
+            \\  - Accept: application/json
+            \\  - User-Agent: Volt/1.0.0
             \\tests:
-            \\  status equals 200
-            \\  header.content-type contains application/json
+            \\  - status equals 200
+            \\  - header.content-type contains application/json
             \\
         );
         try stdout.writeAll("\x1b[32m✓\x1b[0m Created example.volt\n");

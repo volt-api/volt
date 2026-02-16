@@ -12,6 +12,7 @@ const dynamic_var_names = [_][]const u8{
     "$uuid",
     "$timestamp",
     "$isoTimestamp",
+    "$isoDate",
     "$randomInt",
     "$randomFloat",
     "$randomEmail",
@@ -38,7 +39,7 @@ pub fn generateValue(allocator: Allocator, var_name: []const u8) !?[]const u8 {
     if (mem.eql(u8, var_name, "$timestamp")) {
         return try generateTimestamp(allocator);
     }
-    if (mem.eql(u8, var_name, "$isoTimestamp")) {
+    if (mem.eql(u8, var_name, "$isoTimestamp") or mem.eql(u8, var_name, "$isoDate")) {
         return try generateIsoTimestamp(allocator);
     }
     if (mem.eql(u8, var_name, "$randomInt")) {

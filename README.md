@@ -10,7 +10,7 @@
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#benchmarks">Benchmarks</a> &bull;
-  <a href="#vs-the-rest">vs The Rest</a> &bull;
+  <a href="#vs-the-competition">vs The Competition</a> &bull;
   <a href="BENCHMARKS.md">Full Benchmark Report</a>
 </p>
 
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/volt-api/volt/main/scripts/install.
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install volt-api/tap/volt
+brew install volt-api/volt/volt
 ```
 
 ### Scoop (Windows)
