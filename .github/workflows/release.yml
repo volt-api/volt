@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-linux
+            os: ubuntu-latest
+            artifact: volt-linux-x86_64
+          - target: aarch64-linux
+            os: ubuntu-latest
+            artifact: volt-linux-aarch64
+          - target: x86_64-macos
+            os: macos-latest
+            artifact: volt-macos-x86_64
+          - target: aarch64-macos
+            os: macos-latest
+            artifact: volt-macos-aarch64
+          - target: x86_64-windows
+            os: windows-latest
+            artifact: volt-windows-x86_64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: cp zig-out/bin/volt ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: copy zig-out\bin\volt.exe ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/volt-linux-x86_64/volt-linux-x86_64
+            artifacts/volt-linux-aarch64/volt-linux-aarch64
+            artifacts/volt-macos-x86_64/volt-macos-x86_64
+            artifacts/volt-macos-aarch64/volt-macos-aarch64
+            artifacts/volt-windows-x86_64.exe/volt-windows-x86_64.exe
