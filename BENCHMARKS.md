@@ -4,7 +4,7 @@ Real measurements comparing Volt against popular API clients. All Volt numbers a
 
 **Test machine:** Windows 11, AMD Ryzen, NVMe SSD, 16GB RAM
 **Volt build:** `zig build -Doptimize=ReleaseFast` (v1.0.0)
-**Date:** February 2025
+**Date:** February 2026
 
 ---
 
@@ -182,7 +182,7 @@ That's a **287x difference**.
 ## Reproduce These Benchmarks
 
 ```bash
-git clone https://github.com/user/volt.git
+git clone https://github.com/volt-api/volt.git
 cd volt
 zig build -Doptimize=ReleaseFast
 bash scripts/benchmark.sh

@@ -17,6 +17,7 @@ const Allocator = mem.Allocator;
 //   output_format: pretty  (pretty|compact|raw)
 
 pub const VoltConfig = struct {
+    allocator: Allocator,
     base_url: ?[]const u8 = null,
     timeout_ms: u32 = 30_000,
     environment: ?[]const u8 = null,
@@ -28,14 +29,18 @@ pub const VoltConfig = struct {
     verify_ssl: bool = true,
     output_format: OutputFormat = .pretty,
     color: bool = true,
+    /// Retains the raw file content so string slices remain valid
+    _content: ?[]const u8 = null,
 
     pub fn init(allocator: Allocator) VoltConfig {
         return .{
+            .allocator = allocator,
             .default_headers = std.ArrayList(HeaderEntry).init(allocator),
         };
     }
 
     pub fn deinit(self: *VoltConfig) void {
+        if (self._content) |c| self.allocator.free(c);
         self.default_headers.deinit();
     }
 };
@@ -71,16 +76,15 @@ pub fn loadConfig(allocator: Allocator, dir_path: []const u8) !VoltConfig {
         const cwd_rc = std.fs.cwd().openFile(".voltrc", .{}) catch return config;
         defer cwd_rc.close();
         const content = cwd_rc.readToEndAlloc(allocator, 1024 * 1024) catch return config;
-        defer allocator.free(content);
         parseConfig(&config, content) catch {};
+        config._content = content;
         return config;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, 1024 * 1024) catch return config;
-    defer allocator.free(content);
-
     parseConfig(&config, content) catch {};
+    config._content = content;
     return config;
 }
 
@@ -158,7 +162,7 @@ pub fn generateDefaultConfig(allocator: Allocator) ![]const u8 {
     try writer.writeAll("# Default headers applied to all requests\n");
     try writer.writeAll("headers:\n");
     try writer.writeAll("  - Accept: application/json\n");
-    try writer.writeAll("  - User-Agent: Volt/0.2.0\n\n");
+    try writer.writeAll("  - User-Agent: Volt/1.0.0\n\n");
     try writer.writeAll("# Output format: pretty | compact | raw\n");
     try writer.writeAll("output: pretty\n\n");
     try writer.writeAll("# Enable colored output\n");
