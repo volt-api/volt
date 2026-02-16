@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="340" viewBox="0 0 780 340">
+  <defs>
+    <style>
+      .bg { fill: #1a1b26; }
+      .titlebar { fill: #24283b; }
+      .dot-red { fill: #f7768e; }
+      .dot-yellow { fill: #e0af68; }
+      .dot-green { fill: #9ece6a; }
+      .title { fill: #a9b1d6; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; }
+      .prompt { fill: #7aa2f7; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .cmd { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .label { fill: #565f89; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .volt-val { fill: #9ece6a; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
+      .other-val { fill: #f7768e; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .bar-volt { fill: #9ece6a; }
+      .bar-other { fill: #f7768e; opacity: 0.6; }
+      .divider { stroke: #24283b; stroke-width: 1; }
+    </style>
+  </defs>
+  <!-- Window -->
+  <rect class="bg" width="780" height="340" rx="10"/>
+  <rect class="titlebar" width="780" height="38" rx="10"/>
+  <rect class="titlebar" y="28" width="780" height="10"/>
+  <!-- Traffic lights -->
+  <circle class="dot-red" cx="20" cy="19" r="6"/>
+  <circle class="dot-yellow" cx="40" cy="19" r="6"/>
+  <circle class="dot-green" cx="60" cy="19" r="6"/>
+  <text class="title" x="390" y="24" text-anchor="middle">Volt vs Postman</text>
+
+  <!-- Binary size -->
+  <text class="label" x="20" y="72">Binary size</text>
+  <rect class="bar-volt" x="170" y="58" width="12" height="18" rx="3"/>
+  <text class="volt-val" x="190" y="72">3.9 MB</text>
+  <rect class="bar-other" x="170" y="80" width="600" height="8" rx="3"/>
+  <text class="other-val" x="280" y="72">Postman: ~500 MB (128x larger)</text>
+
+  <!-- Startup -->
+  <text class="label" x="20" y="122">Startup</text>
+  <rect class="bar-volt" x="170" y="108" width="8" height="18" rx="3"/>
+  <text class="volt-val" x="186" y="122">42ms</text>
+  <rect class="bar-other" x="170" y="130" width="500" height="8" rx="3"/>
+  <text class="other-val" x="240" y="122">Postman: ~5000ms (119x slower)</text>
+
+  <!-- RAM -->
+  <text class="label" x="20" y="172">RAM usage</text>
+  <rect class="bar-volt" x="170" y="158" width="8" height="18" rx="3"/>
+  <text class="volt-val" x="186" y="172">5 MB</text>
+  <rect class="bar-other" x="170" y="180" width="550" height="8" rx="3"/>
+  <text class="other-val" x="238" y="172">Postman: ~500 MB (100x more)</text>
+
+  <!-- Dependencies -->
+  <text class="label" x="20" y="222">Dependencies</text>
+  <text class="volt-val" x="170" y="222">0</text>
+  <text class="other-val" x="220" y="222">Postman: Electron + Node.js + Chromium</text>
+
+  <!-- Account -->
+  <text class="label" x="20" y="262">Account needed</text>
+  <text class="volt-val" x="170" y="262">No</text>
+  <text class="other-val" x="220" y="262">Postman: Yes (mandatory since March 2026)</text>
+
+  <!-- Offline -->
+  <text class="label" x="20" y="302">Works offline</text>
+  <text class="volt-val" x="170" y="302">Always</text>
+  <text class="other-val" x="250" y="302">Postman: Requires login</text>
+</svg>

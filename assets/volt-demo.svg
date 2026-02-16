@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="520" viewBox="0 0 820 520">
+  <defs>
+    <style>
+      .bg { fill: #1a1b26; }
+      .titlebar { fill: #24283b; }
+      .dot-red { fill: #f7768e; }
+      .dot-yellow { fill: #e0af68; }
+      .dot-green { fill: #9ece6a; }
+      .title { fill: #a9b1d6; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; }
+      .prompt { fill: #7aa2f7; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .cmd { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .method { fill: #7dcfff; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
+      .url { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .status { fill: #9ece6a; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
+      .meta { fill: #565f89; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .key { fill: #7dcfff; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .str { fill: #9ece6a; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .num { fill: #ff9e64; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .brace { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+      .comma { fill: #565f89; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
+    </style>
+  </defs>
+  <!-- Window -->
+  <rect class="bg" width="820" height="520" rx="10"/>
+  <rect class="titlebar" width="820" height="38" rx="10"/>
+  <rect class="titlebar" y="28" width="820" height="10"/>
+  <!-- Traffic lights -->
+  <circle class="dot-red" cx="20" cy="19" r="6"/>
+  <circle class="dot-yellow" cx="40" cy="19" r="6"/>
+  <circle class="dot-green" cx="60" cy="19" r="6"/>
+  <text class="title" x="370" y="24" text-anchor="middle">volt run api/get-users.volt</text>
+  <!-- Content -->
+  <text class="prompt" x="20" y="70">$</text>
+  <text class="cmd" x="36" y="70"> volt run api/get-users.volt</text>
+  <!-- Blank line -->
+  <text class="method" x="20" y="105">GET</text>
+  <text class="url" x="55" y="105">https://jsonplaceholder.typicode.com/users</text>
+  <!-- Blank line -->
+  <text class="status" x="20" y="140">HTTP 200 OK</text>
+  <text class="meta" x="20" y="162">Time: 47.3ms | Size: 5645 bytes</text>
+  <!-- JSON output -->
+  <text class="brace" x="20" y="197">[</text>
+  <text class="brace" x="20" y="219">  {</text>
+
+  <text class="key" x="20" y="241">    "id"</text><text class="brace" x="70" y="241">:</text><text class="num" x="82" y="241"> 1</text><text class="comma" x="97" y="241">,</text>
+  <text class="key" x="20" y="263">    "name"</text><text class="brace" x="95" y="263">:</text><text class="str" x="107" y="263"> "Leanne Graham"</text><text class="comma" x="255" y="263">,</text>
+  <text class="key" x="20" y="285">    "username"</text><text class="brace" x="125" y="285">:</text><text class="str" x="137" y="285"> "Bret"</text><text class="comma" x="200" y="285">,</text>
+  <text class="key" x="20" y="307">    "email"</text><text class="brace" x="105" y="307">:</text><text class="str" x="117" y="307"> "Sincere@april.biz"</text><text class="comma" x="295" y="307">,</text>
+  <text class="key" x="20" y="329">    "phone"</text><text class="brace" x="105" y="329">:</text><text class="str" x="117" y="329"> "1-770-736-8031 x56442"</text><text class="comma" x="336" y="329">,</text>
+  <text class="key" x="20" y="351">    "website"</text><text class="brace" x="118" y="351">:</text><text class="str" x="130" y="351"> "hildegard.org"</text><text class="comma" x="260" y="351">,</text>
+  <text class="key" x="20" y="373">    "company"</text><text class="brace" x="118" y="373">:</text><text class="brace" x="130" y="373"> {</text>
+  <text class="key" x="20" y="395">      "name"</text><text class="brace" x="110" y="395">:</text><text class="str" x="122" y="395"> "Romaguera-Crona"</text>
+  <text class="meta" x="20" y="417">      ...</text>
+  <text class="brace" x="20" y="439">    }</text>
+  <text class="brace" x="20" y="461">  }</text><text class="comma" x="38" y="461">,</text>
+  <text class="meta" x="52" y="461"> ...</text>
+  <text class="brace" x="20" y="483">]</text>
+</svg>
