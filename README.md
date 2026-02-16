@@ -18,20 +18,9 @@
 
 Volt is a complete API development toolkit built from scratch in **Zig**. It runs as a CLI, a TUI, and produces plain-text `.volt` files that live in your git repo alongside your code. No account required. No cloud sync. No telemetry. No Electron.
 
-```
-$ volt run api/users.volt
-
-# Get Users
-GET https://api.example.com/users
-
-HTTP 200 OK
-Time: 47.3ms | Size: 2841 bytes
-
-[
-  { "id": 1, "name": "Alice" },
-  { "id": 2, "name": "Bob" }
-]
-```
+<p align="center">
+  <img src="assets/volt-demo.svg" alt="Volt demo — executing a GET request with syntax-highlighted JSON output" width="780">
+</p>
 
 ## Why Volt?
 
@@ -147,6 +136,10 @@ volt test --data users.csv               # Data-driven testing
 volt test --watch                        # Re-run on changes
 ```
 
+<p align="center">
+  <img src="assets/volt-test.svg" alt="Volt test output showing passing assertions with green checkmarks" width="690">
+</p>
+
 ### 4. Commit it
 
 ```bash
@@ -159,40 +152,9 @@ git commit -m "add user API tests"
 
 Plain text. Human readable. Git diffable.
 
-```yaml
-name: Create User
-description: Register a new user account
-method: POST
-url: https://{{host}}/api/v1/users
-timeout: 5000
-
-headers:
-  - Content-Type: application/json
-  - Authorization: Bearer {{$api_key}}
-
-auth:
-  type: bearer
-  token: {{$api_key}}
-
-body:
-  type: json
-  content: |
-    {
-      "name": "{{username}}",
-      "email": "{{email}}",
-      "role": "member"
-    }
-
-tests:
-  - status equals 201
-  - $.id exists
-  - $.name equals {{username}}
-  - header.location contains /users/
-
-variables:
-  username: testuser
-  email: test@example.com
-```
+<p align="center">
+  <img src="assets/volt-file.svg" alt="A .volt file with syntax highlighting showing method, URL, headers, body, and test assertions" width="650">
+</p>
 
 **Variables** use `{{name}}` syntax. **Secret variables** start with `$` and are masked in output. **Dynamic variables** like `{{$uuid}}`, `{{$timestamp}}`, `{{$randomInt}}` generate fresh values on each run.
 
@@ -276,6 +238,10 @@ variables:
 
 Measured on Windows 11, AMD Ryzen, NVMe SSD. Volt built with `zig build -Doptimize=ReleaseFast`.
 Full methodology and raw data: **[BENCHMARKS.md](BENCHMARKS.md)**
+
+<p align="center">
+  <img src="assets/volt-comparison.svg" alt="Volt vs Postman — 128x smaller, 119x faster startup, 100x less RAM" width="750">
+</p>
 
 ### vs The Competition
 
