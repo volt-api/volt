@@ -14,6 +14,8 @@
   <a href="#the-volt-format">The .volt Format</a> &bull;
   <a href="#how-volt-compares">How Volt Compares</a> &bull;
   <a href="#features">Features</a> &bull;
+  <a href="#web-ui">Web UI</a> &bull;
+  <a href="docs/getting-started.md">Docs</a> &bull;
   <a href="BENCHMARKS.md">Benchmarks</a>
 </p>
 
@@ -23,7 +25,9 @@
   <img src="assets/volt-demo.svg" alt="Volt running a GET request with syntax-highlighted JSON response in 47ms" width="800">
 </p>
 
-Volt is a complete API development toolkit built from scratch in **Zig**. 56 modules, 31,000+ lines, 366 tests — zero external dependencies. Plain-text `.volt` files live in your git repo alongside your code. No account required. No cloud sync. No telemetry. No Electron. Just a single binary that does everything Postman does in 1/128th the size.
+Volt is a complete API development toolkit built from scratch in **Zig**. 62 modules, 37,000+ lines, 383 tests — zero external dependencies. Plain-text `.volt` files live in your git repo alongside your code. No account required. No cloud sync. No telemetry. No Electron. Just a single binary that does everything Postman does in 1/128th the size.
+
+> **[Getting Started](docs/getting-started.md)** &nbsp;&middot;&nbsp; **[Command Reference](docs/commands.md)** &nbsp;&middot;&nbsp; **[.volt File Format](docs/volt-file-format.md)**
 
 ## Install
 
@@ -182,6 +186,7 @@ One command. Your collections become plain text files in git.
 | Request workflows | `volt workflow pipeline.workflow` |
 | Endpoint monitoring | `volt monitor health.volt -i 30` |
 | Terminal UI | `volt` (no arguments) |
+| **Web UI** | **`volt ui` (opens browser, no Electron)** |
 
 ### Testing & CI
 
@@ -227,16 +232,16 @@ tests:
 
 ### Protocols
 
-| Protocol | Command |
-|----------|---------|
-| HTTP/HTTPS | `volt run request.volt` |
-| HTTP/2 | Frame building, HPACK compression, stream management |
-| GraphQL | `volt graphql query.volt` (with introspection) |
-| WebSocket | `volt ws wss://echo.websocket.org` |
-| SSE | `volt sse https://api.example.com/events` |
-| gRPC | `volt grpc list service.proto` |
-| MQTT | `volt mqtt broker:1883 pub topic msg` |
-| Socket.IO | `volt socketio http://localhost:3000` |
+| Protocol | Command | Status |
+|----------|---------|--------|
+| HTTP/HTTPS | `volt run request.volt` | Stable |
+| GraphQL | `volt graphql query.volt` (with introspection) | Stable |
+| WebSocket | `volt ws wss://echo.websocket.org` | Stable |
+| SSE | `volt sse https://api.example.com/events` | Stable |
+| gRPC | `volt grpc list service.proto` | Beta |
+| HTTP/2 | Frame building, HPACK compression, stream management | Beta — TLS negotiation WIP |
+| MQTT | `volt mqtt broker:1883 pub topic msg` | Beta |
+| Socket.IO | `volt socketio http://localhost:3000` | Beta |
 
 ### Security & Sharing
 
@@ -260,6 +265,18 @@ tests:
 | Color themes | `volt theme set dracula` |
 | Plugin system | `volt plugin list\|run\|init` |
 | Response viewer | HTML-to-text, XML highlighting, timing waterfall |
+
+## Web UI
+
+Volt includes a full browser-based UI — served from the same binary. No Electron. No install. No account.
+
+```bash
+volt ui                    # Opens browser to localhost:8080
+volt ui --port 3000        # Custom port
+volt serve --port 8080     # Bind to 0.0.0.0 (team/self-hosted access)
+```
+
+One binary. CLI, TUI, and web UI. Under 5 MB.
 
 ### More
 
@@ -314,21 +331,32 @@ Volt is built entirely in [Zig](https://ziglang.org) — the same language behin
 - **No hidden allocations.** Every byte is accounted for. This is why Volt uses 5 MB while Postman uses 500 MB.
 
 ```
-56 core modules  |  31,210 lines of code  |  366 tests  |  0 dependencies
+62 modules  |  37,000+ lines of code  |  383 tests  |  0 dependencies
 ```
+
+## Current Limitations
+
+Volt is production-ready for HTTP requests, testing, collections, import/export, CI/CD, and the web UI. Some newer features are still maturing:
+
+- **HTTP/2**: Frame layer and HPACK are built. TLS ALPN negotiation is WIP — real HTTP/2 endpoints fall back to HTTP/1.1.
+- **MQTT / Socket.IO**: Packet building and parsing work. Not yet battle-tested against real brokers/servers.
+- **gRPC**: Proto parsing and `.volt` generation work. Actual calls depend on HTTP/2 over TLS (see above).
+- **OAuth browser flow**: PKCE and token exchange work. Localhost callback server not yet automatic — generates URL for manual flow.
+- **Plugin system**: Manifest and discovery work. `volt plugin install <url>` not yet implemented.
+- **No GUI**: Terminal-first (CLI + TUI + web UI via `volt ui`). No native desktop app.
 
 ## Roadmap
 
-- [ ] VS Code extension (syntax highlighting, run from editor)
-- [ ] `volt cloud` — optional E2E encrypted sync
-- [ ] Team workspaces with RBAC
+- [ ] Full HTTP/2 over TLS (ALPN negotiation)
+- [ ] CI results dashboard (web — first paid feature)
+- [ ] Team secrets vault
+- [ ] VS Code extension (syntax highlighting)
 - [ ] HTTP/3 (QUIC) support
 - [ ] GraphQL subscriptions
-- [ ] Hosted mock servers
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). All 366 tests must pass: `zig build test`
+See [CONTRIBUTING.md](CONTRIBUTING.md). All tests must pass: `zig build test`
 
 ## License
 
