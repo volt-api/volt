@@ -24,6 +24,37 @@ pub const RequestField = enum {
     body,
 };
 
+pub const Tab = struct {
+    file_path: ?[]const u8,
+    request: ?VoltFile.VoltRequest,
+    response: ?HttpClient.Response,
+    response_formatted: ?[]const u8,
+    response_scroll: usize,
+    url_input: std.ArrayList(u8),
+    url_cursor: usize,
+    method_index: usize,
+    label: []const u8,
+
+    pub fn init(allocator: Allocator) Tab {
+        return .{
+            .file_path = null,
+            .request = null,
+            .response = null,
+            .response_formatted = null,
+            .response_scroll = 0,
+            .url_input = std.ArrayList(u8).init(allocator),
+            .url_cursor = 0,
+            .method_index = 0,
+            .label = "new",
+        };
+    }
+
+    pub fn deinit(self: *Tab) void {
+        self.url_input.deinit();
+        // Note: don't free request/response here as they may be shared
+    }
+};
+
 pub const App = struct {
     allocator: Allocator,
     writer: terminal.Writer,
@@ -50,6 +81,21 @@ pub const App = struct {
     response_scroll: usize = 0,
     response_formatted: ?[]const u8 = null,
 
+    // Tab state
+    tabs: std.ArrayList(Tab),
+    active_tab: usize = 0,
+
+    // Collection search
+    search_mode: bool = false,
+    search_query: std.ArrayList(u8),
+    search_results: std.ArrayList(usize),
+
+    // Response search
+    response_search_mode: bool = false,
+    response_search_query: std.ArrayList(u8),
+    response_search_matches: std.ArrayList(usize),
+    response_search_current: usize = 0,
+
     // Environment
     env_manager: Environment.EnvManager,
 
@@ -57,6 +103,9 @@ pub const App = struct {
     status_message: ?[]const u8 = null,
     mode: enum { normal, insert, command } = .normal,
     command_buf: std.ArrayList(u8),
+
+    // For gt/gT key sequence tracking
+    prev_char: u8 = 0,
 
     const METHODS = [_]VoltFile.Method{ .GET, .POST, .PUT, .PATCH, .DELETE, .HEAD, .OPTIONS };
     const LEFT_PANE_WIDTH = 30;
@@ -69,10 +118,20 @@ pub const App = struct {
             .term_size = terminal.getTermSize(),
             .collection_files = std.ArrayList([]const u8).init(allocator),
             .url_input = std.ArrayList(u8).init(allocator),
+            .tabs = std.ArrayList(Tab).init(allocator),
+            .search_query = std.ArrayList(u8).init(allocator),
+            .search_results = std.ArrayList(usize).init(allocator),
+            .response_search_query = std.ArrayList(u8).init(allocator),
+            .response_search_matches = std.ArrayList(usize).init(allocator),
             .env_manager = Environment.EnvManager.init(allocator),
             .command_buf = std.ArrayList(u8).init(allocator),
             .collection_dir = dir,
         };
+        // Create default first tab
+        var first_tab = Tab.init(allocator);
+        first_tab.label = "new";
+        try app.tabs.append(first_tab);
+
         try app.scanCollection(dir);
         return app;
     }
@@ -83,6 +142,12 @@ pub const App = struct {
         if (self.current_request) |*req| req.deinit();
         if (self.current_response) |*resp| resp.deinit();
         self.url_input.deinit();
+        for (self.tabs.items) |*tab| tab.deinit();
+        self.tabs.deinit();
+        self.search_query.deinit();
+        self.search_results.deinit();
+        self.response_search_query.deinit();
+        self.response_search_matches.deinit();
         self.env_manager.deinit();
         self.command_buf.deinit();
         if (self.response_formatted) |f| self.allocator.free(f);
@@ -131,6 +196,15 @@ pub const App = struct {
     }
 
     fn handleInput(self: *App, event: input.InputEvent) !void {
+        // Intercept search modes before regular mode handling
+        if (self.search_mode) {
+            try self.handleCollectionSearch(event);
+            return;
+        }
+        if (self.response_search_mode) {
+            try self.handleResponseSearch(event);
+            return;
+        }
         switch (self.mode) {
             .normal => try self.handleNormalMode(event),
             .insert => try self.handleInsertMode(event),
@@ -141,6 +215,23 @@ pub const App = struct {
     fn handleNormalMode(self: *App, event: input.InputEvent) !void {
         switch (event.key) {
             .ctrl_c, .ctrl_q => self.running = false,
+            .ctrl_t => {
+                // Create new tab
+                try self.createNewTab();
+            },
+            .ctrl_w => {
+                // Close current tab (if more than 1)
+                try self.closeCurrentTab();
+            },
+            .alt_char => {
+                // Alt+1 through Alt+9: switch to tab N
+                if (event.char >= '1' and event.char <= '9') {
+                    const target = event.char - '1';
+                    if (target < self.tabs.items.len) {
+                        try self.switchToTab(target);
+                    }
+                }
+            },
             .tab => {
                 self.active_pane = switch (self.active_pane) {
                     .collection => .request,
@@ -148,67 +239,137 @@ pub const App = struct {
                     .response => .collection,
                 };
             },
-            .char => switch (event.char) {
-                'q' => self.running = false,
-                'j' => try self.navigateDown(),
-                'k' => try self.navigateUp(),
-                'h' => {
-                    self.active_pane = switch (self.active_pane) {
-                        .response => .request,
-                        .request => .collection,
-                        .collection => .collection,
-                    };
-                },
-                'l' => {
-                    self.active_pane = switch (self.active_pane) {
-                        .collection => .request,
-                        .request => .response,
-                        .response => .response,
-                    };
-                },
-                'i' => {
-                    if (self.active_pane == .request) {
-                        self.mode = .insert;
-                        self.status_message = "-- INSERT --";
+            .char => {
+                // Handle 'g' prefix sequences: gt = next tab, gT = prev tab
+                if (self.prev_char == 'g') {
+                    if (event.char == 't') {
+                        // gt: next tab
+                        if (self.tabs.items.len > 1) {
+                            const next = (self.active_tab + 1) % self.tabs.items.len;
+                            try self.switchToTab(next);
+                        }
+                        self.prev_char = 0;
+                        return;
+                    } else if (event.char == 'T') {
+                        // gT: previous tab
+                        if (self.tabs.items.len > 1) {
+                            const prev = if (self.active_tab == 0) self.tabs.items.len - 1 else self.active_tab - 1;
+                            try self.switchToTab(prev);
+                        }
+                        self.prev_char = 0;
+                        return;
                     }
-                },
-                ':' => {
-                    self.mode = .command;
-                    self.command_buf.clearRetainingCapacity();
-                    self.status_message = ":";
-                },
-                'm' => {
-                    // Cycle method
-                    self.method_index = (self.method_index + 1) % METHODS.len;
-                    if (self.current_request) |*req| {
-                        req.method = METHODS[self.method_index];
-                    }
-                },
-                'r' => {
-                    // Re-send current request
-                    if (self.current_request != null) {
-                        try self.sendRequest();
-                    }
-                },
-                'R' => {
-                    // Refresh collection file list
-                    try self.scanCollection(self.collection_dir);
-                    self.status_message = "Refreshed";
-                },
-                'G' => {
-                    // Jump to bottom of list
-                    if (self.active_pane == .collection and self.collection_files.items.len > 0) {
-                        self.collection_selected = self.collection_files.items.len - 1;
-                    }
-                },
-                'g' => {
-                    // Jump to top of list
-                    if (self.active_pane == .collection) {
-                        self.collection_selected = 0;
-                        self.collection_scroll = 0;
-                    }
-                },
-                else => {},
+                }
+
+                switch (event.char) {
+                    'q' => self.running = false,
+                    'j' => try self.navigateDown(),
+                    'k' => try self.navigateUp(),
+                    'h' => {
+                        self.active_pane = switch (self.active_pane) {
+                            .response => .request,
+                            .request => .collection,
+                            .collection => .collection,
+                        };
+                    },
+                    'l' => {
+                        self.active_pane = switch (self.active_pane) {
+                            .collection => .request,
+                            .request => .response,
+                            .response => .response,
+                        };
+                    },
+                    'i' => {
+                        if (self.active_pane == .request) {
+                            self.mode = .insert;
+                            self.status_message = "-- INSERT --";
+                        }
+                    },
+                    ':' => {
+                        self.mode = .command;
+                        self.command_buf.clearRetainingCapacity();
+                        self.status_message = ":";
+                    },
+                    '/' => {
+                        // Enter search mode for active pane
+                        if (self.active_pane == .collection) {
+                            self.search_mode = true;
+                            self.search_query.clearRetainingCapacity();
+                            self.search_results.clearRetainingCapacity();
+                            self.status_message = "/";
+                        } else if (self.active_pane == .response) {
+                            self.response_search_mode = true;
+                            self.response_search_query.clearRetainingCapacity();
+                            self.response_search_matches.clearRetainingCapacity();
+                            self.response_search_current = 0;
+                            self.status_message = "/";
+                        }
+                    },
+                    'n' => {
+                        // Next response search match
+                        if (self.response_search_matches.items.len > 0) {
+                            self.response_search_current = (self.response_search_current + 1) % self.response_search_matches.items.len;
+                            self.response_scroll = self.response_search_matches.items[self.response_search_current];
+                        }
+                    },
+                    'N' => {
+                        // Previous response search match
+                        if (self.response_search_matches.items.len > 0) {
+                            self.response_search_current = if (self.response_search_current == 0)
+                                self.response_search_matches.items.len - 1
+                            else
+                                self.response_search_current - 1;
+                            self.response_scroll = self.response_search_matches.items[self.response_search_current];
+                        }
+                    },
+                    'm' => {
+                        // Cycle method
+                        self.method_index = (self.method_index + 1) % METHODS.len;
+                        if (self.current_request) |*req| {
+                            req.method = METHODS[self.method_index];
+                        }
+                    },
+                    'r' => {
+                        // Re-send current request
+                        if (self.current_request != null) {
+                            try self.sendRequest();
+                        }
+                    },
+                    'R' => {
+                        // Refresh collection file list
+                        try self.scanCollection(self.collection_dir);
+                        self.status_message = "Refreshed";
+                    },
+                    'G' => {
+                        // Jump to bottom of list
+                        if (self.active_pane == .collection and self.collection_files.items.len > 0) {
+                            self.collection_selected = self.collection_files.items.len - 1;
+                        }
+                    },
+                    'g' => {
+                        // If prev_char wasn't 'g', record it for gt/gT sequences
+                        // Also jump to top if in collection pane (gg)
+                        if (self.prev_char == 'g') {
+                            // gg: jump to top
+                            if (self.active_pane == .collection) {
+                                self.collection_selected = 0;
+                                self.collection_scroll = 0;
+                            }
+                            self.prev_char = 0;
+                            return;
+                        }
+                    },
+                    't' => {
+                        // 't' in collection pane creates a new tab
+                        if (self.active_pane == .collection) {
+                            try self.createNewTab();
+                        }
+                    },
+                    else => {},
+                }
+                // Track previous char for g-prefix sequences
+                self.prev_char = event.char;
+                return;
             },
             .enter => {
                 if (self.active_pane == .collection) {
@@ -235,6 +396,8 @@ pub const App = struct {
             },
             else => {},
         }
+        // Reset prev_char for non-char keys
+        self.prev_char = 0;
     }
 
     fn handleInsertMode(self: *App, event: input.InputEvent) !void {
@@ -403,6 +566,12 @@ pub const App = struct {
         self.active_pane = .request;
         self.status_message = "Loaded";
 
+        // Update active tab label
+        if (self.active_tab < self.tabs.items.len) {
+            self.tabs.items[self.active_tab].label = path;
+            self.tabs.items[self.active_tab].file_path = path;
+        }
+
         // Clear previous response
         if (self.current_response) |*resp| resp.deinit();
         self.current_response = null;
@@ -517,6 +686,213 @@ pub const App = struct {
         self.status_message = "Saved";
     }
 
+    // ── Tab Management ─────────────────────────────────────────────
+
+    fn saveCurrentTabState(self: *App) void {
+        if (self.active_tab >= self.tabs.items.len) return;
+        var tab = &self.tabs.items[self.active_tab];
+        tab.file_path = self.current_file;
+        tab.request = self.current_request;
+        tab.response = self.current_response;
+        tab.response_formatted = self.response_formatted;
+        tab.response_scroll = self.response_scroll;
+        tab.method_index = self.method_index;
+        tab.url_cursor = self.url_cursor;
+        // Copy url_input contents
+        tab.url_input.clearRetainingCapacity();
+        tab.url_input.appendSlice(self.url_input.items) catch {};
+        // Update label
+        if (self.current_file) |f| {
+            tab.label = f;
+        }
+    }
+
+    fn restoreTabState(self: *App, idx: usize) void {
+        if (idx >= self.tabs.items.len) return;
+        const tab = self.tabs.items[idx];
+        self.current_file = tab.file_path;
+        self.current_request = tab.request;
+        self.current_response = tab.response;
+        self.response_formatted = tab.response_formatted;
+        self.response_scroll = tab.response_scroll;
+        self.method_index = tab.method_index;
+        self.url_cursor = tab.url_cursor;
+        // Restore url_input
+        self.url_input.clearRetainingCapacity();
+        self.url_input.appendSlice(tab.url_input.items) catch {};
+    }
+
+    fn switchToTab(self: *App, target: usize) !void {
+        if (target >= self.tabs.items.len or target == self.active_tab) return;
+        self.saveCurrentTabState();
+        self.active_tab = target;
+        self.restoreTabState(target);
+        const tab = self.tabs.items[target];
+        if (tab.file_path) |f| {
+            self.status_message = f;
+        } else {
+            self.status_message = "new tab";
+        }
+    }
+
+    fn createNewTab(self: *App) !void {
+        self.saveCurrentTabState();
+        var new_tab = Tab.init(self.allocator);
+        new_tab.label = "new";
+        try self.tabs.append(new_tab);
+        self.active_tab = self.tabs.items.len - 1;
+        // Reset current state for new tab
+        self.current_file = null;
+        self.current_request = null;
+        self.current_response = null;
+        self.response_formatted = null;
+        self.response_scroll = 0;
+        self.method_index = 0;
+        self.url_cursor = 0;
+        self.url_input.clearRetainingCapacity();
+        self.status_message = "New tab";
+    }
+
+    fn closeCurrentTab(self: *App) !void {
+        if (self.tabs.items.len <= 1) {
+            self.status_message = "Cannot close last tab";
+            return;
+        }
+        var tab = &self.tabs.items[self.active_tab];
+        tab.deinit();
+        _ = self.tabs.orderedRemove(self.active_tab);
+        if (self.active_tab >= self.tabs.items.len) {
+            self.active_tab = self.tabs.items.len - 1;
+        }
+        self.restoreTabState(self.active_tab);
+        self.status_message = "Tab closed";
+    }
+
+    // ── Search Handlers ─────────────────────────────────────────────
+
+    fn handleCollectionSearch(self: *App, event: input.InputEvent) !void {
+        switch (event.key) {
+            .escape => {
+                self.search_mode = false;
+                self.search_query.clearRetainingCapacity();
+                self.search_results.clearRetainingCapacity();
+                self.status_message = null;
+            },
+            .enter => {
+                // Select first match and exit search
+                if (self.search_results.items.len > 0) {
+                    self.collection_selected = self.search_results.items[0];
+                    try self.loadSelectedRequest();
+                }
+                self.search_mode = false;
+                self.search_query.clearRetainingCapacity();
+                self.search_results.clearRetainingCapacity();
+                self.status_message = null;
+            },
+            .backspace => {
+                if (self.search_query.items.len > 0) {
+                    _ = self.search_query.pop();
+                    try self.updateCollectionSearch();
+                } else {
+                    self.search_mode = false;
+                    self.status_message = null;
+                }
+            },
+            .char => {
+                try self.search_query.append(event.char);
+                try self.updateCollectionSearch();
+            },
+            else => {},
+        }
+    }
+
+    fn updateCollectionSearch(self: *App) !void {
+        self.search_results.clearRetainingCapacity();
+        if (self.search_query.items.len == 0) return;
+
+        for (self.collection_files.items, 0..) |file, idx| {
+            if (caseInsensitiveContains(file, self.search_query.items)) {
+                try self.search_results.append(idx);
+            }
+        }
+    }
+
+    fn caseInsensitiveContains(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i <= haystack.len - needle.len) : (i += 1) {
+            var matched = true;
+            for (needle, 0..) |nc, j| {
+                const hc = haystack[i + j];
+                const h_lower = if (hc >= 'A' and hc <= 'Z') hc + 32 else hc;
+                const n_lower = if (nc >= 'A' and nc <= 'Z') nc + 32 else nc;
+                if (h_lower != n_lower) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) return true;
+        }
+        return false;
+    }
+
+    fn handleResponseSearch(self: *App, event: input.InputEvent) !void {
+        switch (event.key) {
+            .escape => {
+                self.response_search_mode = false;
+                self.response_search_query.clearRetainingCapacity();
+                self.response_search_matches.clearRetainingCapacity();
+                self.response_search_current = 0;
+                self.status_message = null;
+            },
+            .enter => {
+                // Jump to first match and exit search mode
+                if (self.response_search_matches.items.len > 0) {
+                    self.response_search_current = 0;
+                    self.response_scroll = self.response_search_matches.items[0];
+                }
+                self.response_search_mode = false;
+                self.status_message = null;
+            },
+            .backspace => {
+                if (self.response_search_query.items.len > 0) {
+                    _ = self.response_search_query.pop();
+                    try self.updateResponseSearch();
+                } else {
+                    self.response_search_mode = false;
+                    self.status_message = null;
+                }
+            },
+            .char => {
+                try self.response_search_query.append(event.char);
+                try self.updateResponseSearch();
+            },
+            else => {},
+        }
+    }
+
+    fn updateResponseSearch(self: *App) !void {
+        self.response_search_matches.clearRetainingCapacity();
+        if (self.response_search_query.items.len == 0) return;
+
+        if (self.response_formatted) |formatted| {
+            var lines = mem.splitSequence(u8, formatted, "\n");
+            var line_idx: usize = 0;
+            while (lines.next()) |line| {
+                if (caseInsensitiveContains(line, self.response_search_query.items)) {
+                    try self.response_search_matches.append(line_idx);
+                }
+                line_idx += 1;
+            }
+            // Auto-scroll to first match
+            if (self.response_search_matches.items.len > 0) {
+                self.response_search_current = 0;
+                self.response_scroll = self.response_search_matches.items[0];
+            }
+        }
+    }
+
     // ── Rendering ───────────────────────────────────────────────────
 
     fn render(self: *App) !void {
@@ -525,9 +901,14 @@ pub const App = struct {
         // Title bar
         try self.renderTitleBar();
 
-        // Main content area
-        const content_start_row: u16 = 2;
-        const content_height = self.term_size.height -| 3; // Leave room for title + status
+        // Tab bar (row 2, only in right panes area)
+        const right_start_for_tabs = LEFT_PANE_WIDTH + 2;
+        const right_width_for_tabs = self.term_size.width -| right_start_for_tabs;
+        try self.renderTabBar(right_start_for_tabs, right_width_for_tabs, 2);
+
+        // Main content area (shifted down 1 row for tab bar)
+        const content_start_row: u16 = 3;
+        const content_height = self.term_size.height -| 4; // Leave room for title + tab bar + status
 
         try self.renderCollectionPane(content_start_row, 1, LEFT_PANE_WIDTH, content_height);
         try self.renderDivider(content_start_row, LEFT_PANE_WIDTH + 1, content_height);
@@ -560,12 +941,36 @@ pub const App = struct {
         try self.writer.write(" API Client");
 
         // Right side - help hint
-        const help = " q:quit  Tab:pane  r:send  m:method  i:edit  R:refresh  :w save ";
+        const help = " q:quit  Tab:pane  r:send  /:search  Ctrl-T:tab  gt/gT:tabs  :w save ";
         if (self.term_size.width > help.len + 20) {
             try self.writer.moveTo(1, self.term_size.width -| @as(u16, @intCast(help.len)));
             try self.writer.write(help);
         }
 
+        try self.writer.resetStyle();
+    }
+
+    fn renderTabBar(self: *App, start_col: usize, width: usize, row: u16) !void {
+        var col: usize = start_col;
+        for (self.tabs.items, 0..) |tab, i| {
+            const is_active = i == self.active_tab;
+            if (is_active) {
+                try self.writer.setStyle(.{ .fg = .black, .bg = .cyan, .bold = true });
+            } else {
+                try self.writer.setStyle(.{ .fg = .white, .bg = .default, .dim = true });
+            }
+
+            const label = tab.label;
+            const max_label = @min(label.len, 12);
+            try self.writer.moveTo(row, @as(u16, @intCast(@min(col, 65535))));
+            try self.writer.write(" ");
+            try self.writer.write(label[0..max_label]);
+            try self.writer.write(" ");
+            try self.writer.resetStyle();
+
+            col += max_label + 3; // label + padding + separator
+            if (col >= start_col + width) break;
+        }
         try self.writer.resetStyle();
     }
 
@@ -600,33 +1005,74 @@ pub const App = struct {
             return;
         }
 
-        const visible_start = self.collection_scroll;
-        const visible_count = @min(self.collection_files.items.len - visible_start, height -| 2);
+        // Reserve bottom row for search prompt when in search mode
+        const list_height = if (self.search_mode) height -| 3 else height -| 2;
 
-        var i: usize = 0;
-        while (i < visible_count) : (i += 1) {
-            const file_idx = visible_start + i;
-            const file = self.collection_files.items[file_idx];
-            const display_row = row + 2 + @as(u16, @intCast(i));
+        if (self.search_mode and self.search_results.items.len > 0) {
+            // Show filtered results
+            const visible_count = @min(self.search_results.items.len, list_height);
+            var i: usize = 0;
+            while (i < visible_count) : (i += 1) {
+                const file_idx = self.search_results.items[i];
+                const file = self.collection_files.items[file_idx];
+                const display_row = row + 2 + @as(u16, @intCast(i));
 
-            if (file_idx == self.collection_selected) {
-                if (is_active) {
+                if (i == 0) {
+                    // Highlight first match as selected
                     try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
+                    try self.writer.moveTo(display_row, col);
+                    var fill: u16 = 0;
+                    while (fill < width) : (fill += 1) {
+                        try self.writer.write(" ");
+                    }
                 } else {
-                    try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
+                    try self.writer.setStyle(.{ .fg = .white });
                 }
-                // Fill selection background
-                try self.writer.moveTo(display_row, col);
-                var fill: u16 = 0;
-                while (fill < width) : (fill += 1) {
-                    try self.writer.write(" ");
-                }
-            } else {
-                try self.writer.setStyle(.{ .fg = .white });
+                try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
+                try self.writer.resetStyle();
             }
+        } else if (!self.search_mode) {
+            // Normal file list (not in search mode)
+            const visible_start = self.collection_scroll;
+            const visible_count = @min(self.collection_files.items.len - visible_start, list_height);
 
-            // Show method badge + filename
-            try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
+            var i: usize = 0;
+            while (i < visible_count) : (i += 1) {
+                const file_idx = visible_start + i;
+                const file = self.collection_files.items[file_idx];
+                const display_row = row + 2 + @as(u16, @intCast(i));
+
+                if (file_idx == self.collection_selected) {
+                    if (is_active) {
+                        try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
+                    } else {
+                        try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
+                    }
+                    // Fill selection background
+                    try self.writer.moveTo(display_row, col);
+                    var fill: u16 = 0;
+                    while (fill < width) : (fill += 1) {
+                        try self.writer.write(" ");
+                    }
+                } else {
+                    try self.writer.setStyle(.{ .fg = .white });
+                }
+
+                // Show method badge + filename
+                try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
+                try self.writer.resetStyle();
+            }
+        }
+
+        // Render search prompt at bottom of collection pane
+        if (self.search_mode) {
+            const search_row = row + height -| 1;
+            try self.writer.setStyle(.{ .fg = .yellow, .bold = true });
+            try self.writer.writeAt(search_row, col, "/");
+            try self.writer.setStyle(.{ .fg = .white });
+            if (self.search_query.items.len > 0) {
+                try self.writer.writeAtTruncated(search_row, col + 1, self.search_query.items, width -| 2);
+            }
             try self.writer.resetStyle();
         }
     }
@@ -807,21 +1253,40 @@ pub const App = struct {
         }
 
         if (self.response_formatted) |formatted| {
+            // Reserve bottom row for search prompt when in search mode
+            const max_display = if (self.response_search_mode) height -| 3 else height -| 2;
             var lines = mem.splitSequence(u8, formatted, "\n");
             var line_idx: usize = 0;
             var display_row: u16 = 0;
+
+            // Check if line is a search match
+            const has_matches = self.response_search_matches.items.len > 0;
 
             while (lines.next()) |line| {
                 if (line_idx < self.response_scroll) {
                     line_idx += 1;
                     continue;
                 }
-                if (display_row >= height -| 2) break;
+                if (display_row >= max_display) break;
 
                 const render_row = row + 2 + display_row;
 
-                // Colorize status lines and headers
-                if (display_row == 0 and mem.startsWith(u8, line, "HTTP")) {
+                // Check if this line is a search match
+                var is_match = false;
+                if (has_matches) {
+                    for (self.response_search_matches.items) |match_line| {
+                        if (match_line == line_idx) {
+                            is_match = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (is_match) {
+                    // Highlight matched lines
+                    try self.writer.setStyle(.{ .fg = .black, .bg = .yellow, .bold = true });
+                } else if (display_row == 0 and mem.startsWith(u8, line, "HTTP")) {
+                    // Colorize status lines and headers
                     // Status line
                     if (self.current_response) |resp| {
                         const color: terminal.Color = if (resp.status_code < 300) .green else if (resp.status_code < 400) .yellow else .red;
@@ -839,6 +1304,30 @@ pub const App = struct {
                 line_idx += 1;
                 display_row += 1;
             }
+        }
+
+        // Render response search prompt at bottom
+        if (self.response_search_mode) {
+            const search_row = row + height -| 1;
+            try self.writer.setStyle(.{ .fg = .yellow, .bold = true });
+            try self.writer.writeAt(search_row, col, "/");
+            try self.writer.setStyle(.{ .fg = .white });
+            if (self.response_search_query.items.len > 0) {
+                try self.writer.writeAtTruncated(search_row, col + 1, self.response_search_query.items, width -| 2);
+            }
+            // Show match count
+            if (self.response_search_matches.items.len > 0) {
+                var match_buf: [32]u8 = undefined;
+                const match_info = std.fmt.bufPrint(&match_buf, " [{d}/{d}]", .{
+                    self.response_search_current + 1,
+                    self.response_search_matches.items.len,
+                }) catch "";
+                const query_len_u16 = @as(u16, @intCast(@min(self.response_search_query.items.len, width -| 2)));
+                const info_col = col + 1 + query_len_u16;
+                try self.writer.setStyle(.{ .fg = .bright_black });
+                try self.writer.writeAtTruncated(search_row, info_col, match_info, width -| (query_len_u16 + 2));
+            }
+            try self.writer.resetStyle();
         }
     }
 
@@ -882,9 +1371,28 @@ pub const App = struct {
 
         try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
 
+        // Tab info
+        if (self.tabs.items.len > 0) {
+            try self.writer.write(" ");
+            try self.writer.setStyle(.{ .bg = .bright_black, .fg = .cyan });
+            var tab_buf: [32]u8 = undefined;
+            const tab_info = std.fmt.bufPrint(&tab_buf, "Tab {d}/{d}", .{
+                self.active_tab + 1,
+                self.tabs.items.len,
+            }) catch "Tab ?/?";
+            try self.writer.write(tab_info);
+            try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
+        }
+
+        // Current file
+        if (self.current_file) |file| {
+            try self.writer.write(" | ");
+            try self.writer.write(file);
+        }
+
         // Status message
         if (self.status_message) |msg| {
-            try self.writer.write(" ");
+            try self.writer.write(" | ");
             try self.writer.write(msg);
         }
 
@@ -894,22 +1402,13 @@ pub const App = struct {
             try self.writer.write(self.command_buf.items);
         }
 
-        // Right side info — response timing + file
+        // Right side info — response timing
         var right_info_buf: [128]u8 = undefined;
         var right_info: []const u8 = "";
         if (self.current_response) |resp| {
-            if (self.current_file) |file| {
-                right_info = std.fmt.bufPrint(&right_info_buf, "{d}ms | {s}", .{
-                    @as(u32, @intFromFloat(resp.timing.total_ms)),
-                    file,
-                }) catch file;
-            } else {
-                right_info = std.fmt.bufPrint(&right_info_buf, "{d}ms", .{
-                    @as(u32, @intFromFloat(resp.timing.total_ms)),
-                }) catch "";
-            }
-        } else if (self.current_file) |file| {
-            right_info = file;
+            right_info = std.fmt.bufPrint(&right_info_buf, "{d}ms", .{
+                @as(u32, @intFromFloat(resp.timing.total_ms)),
+            }) catch "";
         }
         if (right_info.len > 0) {
             const right_col = self.term_size.width -| @as(u16, @intCast(@min(right_info.len + 2, self.term_size.width)));

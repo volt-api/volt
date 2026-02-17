@@ -50,6 +50,25 @@ pub const JsonPath = @import("jsonpath.zig");
 pub const TestReport = @import("test_report.zig");
 pub const InsomniaImport = @import("insomnia_import.zig");
 
+// Competitive feature modules
+pub const Secrets = @import("secrets.zig");
+pub const Watch = @import("watch.zig");
+pub const CI = @import("ci.zig");
+pub const Share = @import("share.zig");
+pub const Mqtt = @import("mqtt.zig");
+pub const SocketIO = @import("socketio.zig");
+pub const Proxy = @import("proxy.zig");
+pub const Themes = @import("themes.zig");
+pub const Plugin = @import("plugin.zig");
+pub const OpenAPIDesigner = @import("openapi_designer.zig");
+pub const Replay = @import("replay.zig");
+
+// Collection & protocol modules
+pub const CollectionOrganizer = @import("collection_organizer.zig");
+pub const H2 = @import("h2.zig");
+pub const OAuthFlow = @import("oauth_flow.zig");
+pub const ResponseViewer = @import("response_viewer.zig");
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

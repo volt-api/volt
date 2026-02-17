@@ -163,7 +163,7 @@ That's **~30 minutes per month** saved on startup alone.
 ### For CI/CD Pipelines
 
 Running 50 API tests per CI build, 10 builds per day:
-- **Volt:** Native binary, starts in 42ms, runs 127 tests in 400ms
+- **Volt:** Native binary, starts in 42ms, runs 366 tests in under 1s
 - **Newman (Postman CLI):** Requires Node.js install, npm dependencies, 2-5s startup
 - **Bruno CLI:** Requires Node.js, npm install, 1-3s startup
 
