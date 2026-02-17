@@ -36,6 +36,9 @@ const commands = [_][]const u8{
     "env",        "history",   "lint",      "diff",       "version",
     "help",       "workflow",  "validate",  "docs",       "completions",
     "monitor",    "cache",     "ws",        "sse",        "auth",
+    "har",        "grpc",      "secrets",   "watch",      "ci",
+    "share",      "mqtt",      "socketio",  "proxy",      "theme",
+    "plugin",     "design",    "replay",    "login",      "search",
 };
 
 const command_descriptions = [_][]const u8{
@@ -64,6 +67,21 @@ const command_descriptions = [_][]const u8{
     "WebSocket client",
     "Server-Sent Events client",
     "Manage authentication credentials",
+    "Export/import HAR recordings",
+    "Generate .volt files from proto definitions",
+    "Manage E2E encrypted secrets",
+    "Watch files and re-run on change",
+    "Detect CI environment and config",
+    "Share requests as curl/base64/URL",
+    "MQTT publish/subscribe client",
+    "Socket.IO client",
+    "Capture HTTP traffic as .volt files",
+    "Manage color themes",
+    "Manage plugins",
+    "OpenAPI design-first workflow",
+    "Replay history entries with diff",
+    "OAuth browser login with PKCE",
+    "Search collection requests",
 };
 
 const file_commands = [_][]const u8{

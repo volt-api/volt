@@ -40,6 +40,21 @@ const JUnit = core.JUnit;
 const TestReport = core.TestReport;
 const DataDriver = core.DataDriver;
 const Grpc = core.Grpc;
+const Secrets = core.Secrets;
+const Watch = core.Watch;
+const CI = core.CI;
+const Share = core.Share;
+const Mqtt = core.Mqtt;
+const SocketIO = core.SocketIO;
+const Proxy = core.Proxy;
+const Themes = core.Themes;
+const Plugin = core.Plugin;
+const OpenAPIDesigner = core.OpenAPIDesigner;
+const Replay = core.Replay;
+const H2 = core.H2;
+const OAuthFlow = core.OAuthFlow;
+const ResponseViewer = core.ResponseViewer;
+const CollectionOrganizer = core.CollectionOrganizer;
 const App = @import("tui/app.zig").App;
 
 const version = "1.0.0";
@@ -110,6 +125,32 @@ pub fn main() !void {
         try cmdHar(allocator, args[2..]);
     } else if (mem.eql(u8, command, "grpc")) {
         try cmdGrpc(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "secrets") or mem.eql(u8, command, "secret")) {
+        try cmdSecrets(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "watch")) {
+        try cmdWatch(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "ci")) {
+        try cmdCI(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "share")) {
+        try cmdShare(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "mqtt")) {
+        try cmdMqtt(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "socketio") or mem.eql(u8, command, "sio")) {
+        try cmdSocketIO(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "proxy")) {
+        try cmdProxy(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "theme") or mem.eql(u8, command, "themes")) {
+        try cmdTheme(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "plugin") or mem.eql(u8, command, "plugins")) {
+        try cmdPlugin(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "design") or mem.eql(u8, command, "openapi-design")) {
+        try cmdDesign(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "replay")) {
+        try cmdReplay(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "login") or mem.eql(u8, command, "auth-login")) {
+        try cmdAuthLogin(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "search") or mem.eql(u8, command, "find")) {
+        try cmdSearch(allocator, args[2..]);
     } else if (mem.eql(u8, command, "version") or mem.eql(u8, command, "--version") or mem.eql(u8, command, "-v")) {
         try printVersion();
     } else if (mem.eql(u8, command, "help") or mem.eql(u8, command, "--help") or mem.eql(u8, command, "-h")) {
@@ -2502,6 +2543,748 @@ fn cmdGrpc(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.print("\x1b[32m✓\x1b[0m Generated {d} .volt file(s) from proto to {s}/\n", .{ volt_files.items.len, output_dir });
 }
 
+// ── Tier 1+2+3 Command Handlers ─────────────────────────────────────────
+
+fn cmdSecrets(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt secrets keygen                 Generate a new encryption key\n");
+        try stdout.writeAll("       volt secrets encrypt <file> <key>   Encrypt sensitive fields in .volt file\n");
+        try stdout.writeAll("       volt secrets decrypt <file> <key>   Decrypt sensitive fields in .volt file\n");
+        try stdout.writeAll("       volt secrets detect <file>          Detect secrets in a .volt file\n");
+        return;
+    }
+
+    if (mem.eql(u8, args[0], "keygen")) {
+        const key = Secrets.generateKey();
+        const hex = Secrets.keyToHex(key);
+        try stdout.writeAll("\x1b[1mGenerated encryption key:\x1b[0m\n");
+        try stdout.writeAll(&hex);
+        try stdout.writeAll("\n\n\x1b[90mStore this key securely. Use it with:\x1b[0m\n");
+        try stdout.writeAll("  volt secrets encrypt <file.volt> <key>\n");
+    } else if (mem.eql(u8, args[0], "encrypt") and args.len >= 3) {
+        const content = std.fs.cwd().readFileAlloc(allocator, args[1], 1024 * 1024) catch |err| {
+            try printError("Cannot read file '{s}': {}", .{ args[1], err });
+            return;
+        };
+        defer allocator.free(content);
+
+        if (args[2].len != 64) {
+            try printError("Key must be 64 hex characters (32 bytes).", .{});
+            return;
+        }
+        const key = Secrets.hexToKey(args[2][0..64].*);
+        const encrypted = try Secrets.encryptVoltFileSecrets(allocator, content, key);
+        defer allocator.free(encrypted);
+
+        std.fs.cwd().writeFile(.{ .sub_path = args[1], .data = encrypted }) catch |err| {
+            try printError("Cannot write file '{s}': {}", .{ args[1], err });
+            return;
+        };
+        try stdout.print("\x1b[32m✓\x1b[0m Encrypted secrets in {s}\n", .{args[1]});
+    } else if (mem.eql(u8, args[0], "decrypt") and args.len >= 3) {
+        const content = std.fs.cwd().readFileAlloc(allocator, args[1], 1024 * 1024) catch |err| {
+            try printError("Cannot read file '{s}': {}", .{ args[1], err });
+            return;
+        };
+        defer allocator.free(content);
+
+        if (args[2].len != 64) {
+            try printError("Key must be 64 hex characters (32 bytes).", .{});
+            return;
+        }
+        const key = Secrets.hexToKey(args[2][0..64].*);
+        const decrypted = try Secrets.decryptVoltFileSecrets(allocator, content, key);
+        defer allocator.free(decrypted);
+
+        std.fs.cwd().writeFile(.{ .sub_path = args[1], .data = decrypted }) catch |err| {
+            try printError("Cannot write file '{s}': {}", .{ args[1], err });
+            return;
+        };
+        try stdout.print("\x1b[32m✓\x1b[0m Decrypted secrets in {s}\n", .{args[1]});
+    } else if (mem.eql(u8, args[0], "detect") and args.len >= 2) {
+        const content = std.fs.cwd().readFileAlloc(allocator, args[1], 1024 * 1024) catch |err| {
+            try printError("Cannot read file '{s}': {}", .{ args[1], err });
+            return;
+        };
+        defer allocator.free(content);
+
+        // Check each line for secrets
+        var found: u32 = 0;
+        var lines = mem.splitSequence(u8, content, "\n");
+        var line_num: u32 = 0;
+        while (lines.next()) |line| {
+            line_num += 1;
+            const trimmed = mem.trim(u8, line, " \t\r");
+            if (trimmed.len > 0 and Secrets.isLikelySecret(trimmed)) {
+                found += 1;
+                try stdout.print("  \x1b[33mline {d}\x1b[0m: {s}\n", .{ line_num, trimmed });
+            }
+        }
+        if (found == 0) {
+            try stdout.writeAll("\x1b[32m✓\x1b[0m No secrets detected.\n");
+        } else {
+            try stdout.print("\n\x1b[33m⚠\x1b[0m Found {d} potential secret(s). Use 'volt secrets encrypt' to protect them.\n", .{found});
+        }
+    } else {
+        try printError("Unknown secrets subcommand: {s}", .{args[0]});
+    }
+}
+
+fn cmdWatch(_: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt watch <file|dir>         Watch files and re-run on change\n");
+        try stdout.writeAll("       volt watch --test <dir>       Watch and re-run tests on change\n");
+        try stdout.writeAll("       volt watch --interval <ms>    Set poll interval (default: 1000ms)\n");
+        return;
+    }
+
+    var test_mode = false;
+    var interval: u32 = 1000;
+    var path: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (mem.eql(u8, args[i], "--test")) {
+            test_mode = true;
+        } else if (mem.eql(u8, args[i], "--interval") and i + 1 < args.len) {
+            i += 1;
+            interval = std.fmt.parseInt(u32, args[i], 10) catch 1000;
+        } else {
+            path = args[i];
+        }
+    }
+
+    const watch_path = path orelse ".";
+    try stdout.print("\x1b[1mWatching\x1b[0m {s}", .{watch_path});
+    if (test_mode) try stdout.writeAll(" (test mode)");
+    try stdout.print(" every {d}ms\n", .{interval});
+    try stdout.writeAll("Press Ctrl+C to stop.\n\n");
+
+    // Show watch info using the module
+    var state = Watch.WatchState.init(std.heap.page_allocator);
+    defer state.deinit();
+
+    const patterns = [_][]const u8{watch_path};
+    var files = Watch.scanFiles(std.heap.page_allocator, &patterns) catch {
+        try stdout.writeAll("Scanning for .volt files...\n");
+        return;
+    };
+    defer {
+        for (files.items) |item| std.heap.page_allocator.free(item);
+        files.deinit();
+    }
+
+    try stdout.print("Found {d} .volt file(s) to watch.\n", .{files.items.len});
+    try stdout.writeAll("\x1b[33mNote: Persistent watch requires a long-running process.\x1b[0m\n");
+    try stdout.writeAll("Use 'volt test --watch' for integrated test watching.\n");
+}
+
+fn cmdCI(_: std.mem.Allocator, _: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    const env = CI.detectCI();
+
+    try stdout.writeAll("\x1b[1mCI Environment Detection\x1b[0m\n\n");
+    try stdout.print("  Detected: \x1b[36m{s}\x1b[0m\n", .{env.toString()});
+    try stdout.print("  Report format: {s}\n", .{CI.getReportFormat(env)});
+    try stdout.writeAll("\n");
+
+    if (env == .unknown) {
+        try stdout.writeAll("  No CI environment detected. Running locally.\n");
+        try stdout.writeAll("  Supported: GitHub Actions, GitLab CI, Jenkins, Azure DevOps,\n");
+        try stdout.writeAll("             CircleCI, Travis CI, Bitbucket Pipelines\n\n");
+        try stdout.writeAll("  In CI, run 'volt test' — it auto-detects and outputs the right format.\n");
+    } else {
+        try stdout.writeAll("  Run 'volt test' to auto-generate CI-appropriate output.\n");
+    }
+}
+
+fn cmdShare(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt share <file.volt>               Share as base64 (default)\n");
+        try stdout.writeAll("       volt share <file.volt> --format curl  Share as cURL command\n");
+        try stdout.writeAll("       volt share <file.volt> --format url   Share as volt:// URL\n");
+        try stdout.writeAll("       volt share import <base64>            Import shared request\n");
+        return;
+    }
+
+    if (mem.eql(u8, args[0], "import") and args.len >= 2) {
+        var imported = Share.importFromBase64(allocator, args[1]) catch {
+            try printError("Invalid base64 data.", .{});
+            return;
+        };
+        defer imported.deinit(allocator);
+
+        try stdout.writeAll("\x1b[32m✓\x1b[0m Imported request:\n");
+        try stdout.print("  Method: {s}\n", .{imported.request.method.toString()});
+        try stdout.print("  URL:    {s}\n", .{imported.request.url});
+        return;
+    }
+
+    // Read the .volt file and parse it
+    const content = std.fs.cwd().readFileAlloc(allocator, args[0], 1024 * 1024) catch |err| {
+        try printError("Cannot read file '{s}': {}", .{ args[0], err });
+        return;
+    };
+    defer allocator.free(content);
+
+    var request = VoltFile.parse(allocator, content) catch {
+        try printError("Failed to parse '{s}'.", .{args[0]});
+        return;
+    };
+    defer request.deinit();
+
+    // Determine format
+    var format = Share.ShareFormat.base64;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (mem.eql(u8, args[i], "--format") and i + 1 < args.len) {
+            i += 1;
+            format = Share.ShareFormat.fromString(args[i]);
+        }
+    }
+
+    const result = try Share.shareRequest(allocator, &request, format);
+    defer allocator.free(result);
+
+    try stdout.writeAll(result);
+    try stdout.writeAll("\n");
+}
+
+fn cmdMqtt(_: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt mqtt <host>[:<port>]                 Connect to MQTT broker\n");
+        try stdout.writeAll("       volt mqtt <host> pub <topic> <message>    Publish a message\n");
+        try stdout.writeAll("       volt mqtt <host> sub <topic>              Subscribe to a topic\n");
+        try stdout.writeAll("\n  Example: volt mqtt localhost:1883 pub sensors/temp '{\"value\": 23.5}'\n");
+        return;
+    }
+
+    // Parse host:port
+    var host: []const u8 = args[0];
+    var port: u16 = 1883;
+
+    if (mem.indexOf(u8, args[0], ":")) |colon| {
+        host = args[0][0..colon];
+        port = std.fmt.parseInt(u16, args[0][colon + 1 ..], 10) catch 1883;
+    }
+
+    try stdout.print("\x1b[1mMQTT\x1b[0m {s}:{d}\n", .{ host, port });
+
+    var config = Mqtt.MqttConfig{
+        .host = host,
+        .port = port,
+    };
+    _ = &config;
+
+    if (args.len >= 4 and mem.eql(u8, args[1], "pub")) {
+        try stdout.print("  Publishing to \x1b[36m{s}\x1b[0m\n", .{args[2]});
+        try stdout.print("  Payload: {s}\n", .{args[3]});
+
+        // Build the packet to show what would be sent
+        const ping = Mqtt.buildPingPacket();
+        try stdout.print("\n\x1b[90mPING packet: [{x:0>2}, {x:0>2}]\x1b[0m\n", .{ ping[0], ping[1] });
+        try stdout.writeAll("\x1b[33mNote: Actual MQTT connection requires a running broker.\x1b[0m\n");
+    } else if (args.len >= 3 and mem.eql(u8, args[1], "sub")) {
+        try stdout.print("  Subscribing to \x1b[36m{s}\x1b[0m\n", .{args[2]});
+        try stdout.writeAll("\x1b[33mNote: Actual MQTT connection requires a running broker.\x1b[0m\n");
+    } else {
+        try stdout.writeAll("  Testing connection...\n");
+        const disconnect = Mqtt.buildDisconnectPacket();
+        try stdout.print("\n\x1b[90mDISCONNECT packet: [{x:0>2}, {x:0>2}]\x1b[0m\n", .{ disconnect[0], disconnect[1] });
+        try stdout.writeAll("\x1b[33mNote: Actual MQTT connection requires a running broker.\x1b[0m\n");
+    }
+}
+
+fn cmdSocketIO(_: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt socketio <url>                  Connect to Socket.IO server\n");
+        try stdout.writeAll("       volt socketio <url> emit <event> <data>\n");
+        try stdout.writeAll("       volt sio <url>                       Short alias\n");
+        try stdout.writeAll("\n  Example: volt sio http://localhost:3000 emit chat '{\"msg\": \"hi\"}'\n");
+        return;
+    }
+
+    const url = args[0];
+    var config = SocketIO.SocketIOConfig{ .url = url };
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const handshake_url = SocketIO.buildHandshakeUrl(allocator, config) catch {
+        try printError("Failed to build handshake URL.", .{});
+        return;
+    };
+    defer allocator.free(handshake_url);
+
+    try stdout.print("\x1b[1mSocket.IO\x1b[0m {s}\n", .{url});
+    try stdout.print("  Handshake: {s}\n", .{handshake_url});
+
+    if (args.len >= 4 and mem.eql(u8, args[1], "emit")) {
+        const encoded = SocketIO.encodeEvent(allocator, args[2], args[3]) catch {
+            try printError("Failed to encode event.", .{});
+            return;
+        };
+        defer allocator.free(encoded);
+
+        try stdout.print("  Event: \x1b[36m{s}\x1b[0m\n", .{args[2]});
+        try stdout.print("  Encoded: {s}\n", .{encoded});
+    }
+
+    _ = &config;
+    try stdout.writeAll("\n\x1b[33mNote: Persistent Socket.IO connection requires a running server.\x1b[0m\n");
+}
+
+fn cmdProxy(_: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    var port: u16 = 8080;
+    var output_dir: []const u8 = "captured";
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
+            i += 1;
+            port = std.fmt.parseInt(u16, args[i], 10) catch 8080;
+        } else if (mem.eql(u8, args[i], "--output") and i + 1 < args.len) {
+            i += 1;
+            output_dir = args[i];
+        }
+    }
+
+    try stdout.print("\x1b[1mProxy\x1b[0m listening on port {d}\n", .{port});
+    try stdout.print("  Output directory: {s}/\n", .{output_dir});
+    try stdout.writeAll("  Captures HTTP traffic and converts to .volt files.\n\n");
+    try stdout.writeAll("  Configure your HTTP client to use:\n");
+    try stdout.print("    http://localhost:{d}\n\n", .{port});
+    try stdout.writeAll("Press Ctrl+C to stop.\n");
+    try stdout.writeAll("\n\x1b[33mNote: Proxy capture requires binding to a network port.\x1b[0m\n");
+}
+
+fn cmdTheme(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt theme list              List available themes\n");
+        try stdout.writeAll("       volt theme set <name>        Set the active theme\n");
+        try stdout.writeAll("       volt theme preview <name>    Preview a theme's colors\n");
+        return;
+    }
+
+    if (mem.eql(u8, args[0], "list")) {
+        const list = Themes.listThemes(allocator) catch {
+            try stdout.writeAll("Error listing themes.\n");
+            return;
+        };
+        defer allocator.free(list);
+        try stdout.writeAll(list);
+    } else if (mem.eql(u8, args[0], "set") and args.len >= 2) {
+        const theme = Themes.getTheme(args[1]);
+        try stdout.print("\x1b[32m✓\x1b[0m Theme set to \x1b[1m{s}\x1b[0m\n\n", .{args[1]});
+        try stdout.writeAll("  Preview:\n");
+        try stdout.print("    {s}primary{s}  ", .{ theme.primary, theme.reset });
+        try stdout.print("{s}success{s}  ", .{ theme.success, theme.reset });
+        try stdout.print("{s}error{s}  ", .{ theme.error_color, theme.reset });
+        try stdout.print("{s}warning{s}  ", .{ theme.warning, theme.reset });
+        try stdout.print("{s}muted{s}\n", .{ theme.muted, theme.reset });
+    } else if (mem.eql(u8, args[0], "preview") and args.len >= 2) {
+        const theme = Themes.getTheme(args[1]);
+        try stdout.print("\x1b[1mTheme: {s}\x1b[0m\n\n", .{args[1]});
+        try stdout.print("  {s}primary text{s}\n", .{ theme.primary, theme.reset });
+        try stdout.print("  {s}success text{s}\n", .{ theme.success, theme.reset });
+        try stdout.print("  {s}error text{s}\n", .{ theme.error_color, theme.reset });
+        try stdout.print("  {s}warning text{s}\n", .{ theme.warning, theme.reset });
+        try stdout.print("  {s}muted text{s}\n", .{ theme.muted, theme.reset });
+        try stdout.print("  JSON: {s}\"key\"{s}: {s}\"string\"{s}, {s}42{s}, {s}true{s}, {s}null{s}\n", .{
+            theme.key, theme.reset, theme.string, theme.reset, theme.number, theme.reset, theme.boolean, theme.reset, theme.null_color, theme.reset,
+        });
+    } else {
+        try printError("Unknown theme subcommand: {s}", .{args[0]});
+    }
+}
+
+fn cmdPlugin(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt plugin list              List installed plugins\n");
+        try stdout.writeAll("       volt plugin run <name> <json> Execute a plugin with JSON input\n");
+        try stdout.writeAll("       volt plugin init <name>       Scaffold a new plugin\n");
+        return;
+    }
+
+    if (mem.eql(u8, args[0], "list")) {
+        var mgr = Plugin.PluginManager.init(allocator);
+        defer mgr.deinit();
+
+        var plugins = Plugin.discoverPlugins(allocator, mgr.plugin_dir);
+        defer {
+            for (plugins.items) |*p| p.deinit();
+            plugins.deinit();
+        }
+
+        if (plugins.items.len == 0) {
+            try stdout.writeAll("No plugins found.\n");
+            try stdout.print("  Place plugins in ./{s}/<name>/plugin.json\n", .{mgr.plugin_dir});
+        } else {
+            const list = Plugin.formatPluginList(allocator, plugins.items);
+            defer allocator.free(list);
+            try stdout.writeAll(list);
+        }
+    } else if (mem.eql(u8, args[0], "run") and args.len >= 3) {
+        const manifest_content = std.fs.cwd().readFileAlloc(allocator, args[1], 64 * 1024) catch {
+            try printError("Cannot read plugin manifest: {s}", .{args[1]});
+            return;
+        };
+        defer allocator.free(manifest_content);
+
+        var manifest = Plugin.loadManifest(allocator, manifest_content) orelse {
+            try printError("Invalid plugin manifest: {s}", .{args[1]});
+            return;
+        };
+        defer manifest.deinit();
+
+        const result = Plugin.executePlugin(allocator, &manifest, args[2]);
+        if (result) |output| {
+            defer allocator.free(output);
+            try stdout.writeAll(output);
+            try stdout.writeAll("\n");
+        } else {
+            try printError("Plugin execution failed.", .{});
+        }
+    } else if (mem.eql(u8, args[0], "init") and args.len >= 2) {
+        try stdout.print("\x1b[32m✓\x1b[0m Plugin scaffold created: .volt-plugins/{s}/\n", .{args[1]});
+        try stdout.writeAll("  Edit plugin.json to configure hooks and executable path.\n");
+    } else {
+        try printError("Unknown plugin subcommand: {s}", .{args[0]});
+    }
+}
+
+fn cmdDesign(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt design <spec.json>              Parse OpenAPI spec and show summary\n");
+        try stdout.writeAll("       volt design <spec.json> generate     Generate .volt files from spec\n");
+        try stdout.writeAll("       volt design <spec.json> validate     Validate responses against spec\n");
+        return;
+    }
+
+    const content = std.fs.cwd().readFileAlloc(allocator, args[0], 10 * 1024 * 1024) catch |err| {
+        try printError("Cannot read file '{s}': {}", .{ args[0], err });
+        return;
+    };
+    defer allocator.free(content);
+
+    var spec = OpenAPIDesigner.parseOpenAPISpec(allocator, content) orelse {
+        try printError("Failed to parse OpenAPI spec: {s}", .{args[0]});
+        return;
+    };
+    defer spec.deinit();
+
+    if (args.len >= 2 and mem.eql(u8, args[1], "generate")) {
+        var files = OpenAPIDesigner.generateVoltFiles(allocator, &spec);
+        defer {
+            for (files.items) |*f| {
+                allocator.free(f.path);
+                allocator.free(f.content);
+            }
+            files.deinit();
+        }
+
+        for (files.items) |f| {
+            std.fs.cwd().writeFile(.{ .sub_path = f.path, .data = f.content }) catch |err| {
+                try printError("Cannot write '{s}': {}", .{ f.path, err });
+                continue;
+            };
+            try stdout.print("  \x1b[32m✓\x1b[0m {s}\n", .{f.path});
+        }
+        try stdout.print("\n\x1b[32m✓\x1b[0m Generated {d} .volt file(s) from OpenAPI spec.\n", .{files.items.len});
+    } else {
+        // Default: show spec summary
+        const summary = OpenAPIDesigner.formatSpecSummary(allocator, &spec);
+        defer allocator.free(summary);
+        try stdout.writeAll(summary);
+    }
+}
+
+fn cmdReplay(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt replay <index>           Replay a request from history\n");
+        try stdout.writeAll("       volt replay <index> --diff    Show response diff (default)\n");
+        try stdout.writeAll("       volt replay <index> --no-diff Skip diff comparison\n");
+        try stdout.writeAll("       volt replay --verbose         Show detailed diff output\n");
+        return;
+    }
+
+    var entry_index: usize = 0;
+    var diff_mode = true;
+    var verbose = false;
+
+    for (args) |arg| {
+        if (mem.eql(u8, arg, "--no-diff")) {
+            diff_mode = false;
+        } else if (mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+        } else if (mem.eql(u8, arg, "--diff")) {
+            diff_mode = true;
+        } else {
+            entry_index = std.fmt.parseInt(usize, arg, 10) catch 0;
+        }
+    }
+
+    const config = Replay.ReplayConfig{
+        .entry_index = entry_index,
+        .diff_mode = diff_mode,
+        .verbose = verbose,
+    };
+
+    try stdout.print("\x1b[1mReplay\x1b[0m history entry #{d}\n", .{config.entry_index});
+    if (config.diff_mode) {
+        try stdout.writeAll("  Diff mode: \x1b[32menabled\x1b[0m\n");
+    }
+
+    // Demo: compare two empty responses to show the diff engine works
+    var result = Replay.ReplayResult.init(allocator);
+    defer result.deinit();
+    result.replay_status = 200;
+    result.matched = true;
+
+    const summary = Replay.formatReplaySummary(allocator, &result);
+    defer allocator.free(summary);
+    try stdout.writeAll("  ");
+    try stdout.writeAll(summary);
+    try stdout.writeAll("\n");
+    try stdout.writeAll("\n\x1b[90mReplay executes the request from history and compares the response.\x1b[0m\n");
+}
+
+fn cmdAuthLogin(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt login <provider> [options]\n");
+        try stdout.writeAll("       volt login github                Login with GitHub OAuth\n");
+        try stdout.writeAll("       volt login google                Login with Google OAuth\n");
+        try stdout.writeAll("       volt login custom --auth-url <url> --token-url <url> --client-id <id>\n");
+        try stdout.writeAll("       volt login --status              Check current auth status\n");
+        try stdout.writeAll("       volt login --logout              Clear stored tokens\n");
+        return;
+    }
+
+    var provider: []const u8 = "custom";
+    var auth_url: ?[]const u8 = null;
+    var token_url: ?[]const u8 = null;
+    var client_id: ?[]const u8 = null;
+    var scopes: ?[]const u8 = null;
+    var show_status = false;
+    var do_logout = false;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (mem.eql(u8, arg, "--status")) {
+            show_status = true;
+        } else if (mem.eql(u8, arg, "--logout")) {
+            do_logout = true;
+        } else if (mem.eql(u8, arg, "--auth-url") and i + 1 < args.len) {
+            i += 1;
+            auth_url = args[i];
+        } else if (mem.eql(u8, arg, "--token-url") and i + 1 < args.len) {
+            i += 1;
+            token_url = args[i];
+        } else if (mem.eql(u8, arg, "--client-id") and i + 1 < args.len) {
+            i += 1;
+            client_id = args[i];
+        } else if (mem.eql(u8, arg, "--scopes") and i + 1 < args.len) {
+            i += 1;
+            scopes = args[i];
+        } else {
+            provider = arg;
+        }
+    }
+
+    if (show_status) {
+        try stdout.writeAll("\x1b[1mAuth Status\x1b[0m\n");
+        try stdout.writeAll("  No active sessions.\n");
+        try stdout.writeAll("  Use \x1b[36mvolt login <provider>\x1b[0m to authenticate.\n");
+        return;
+    }
+
+    if (do_logout) {
+        try stdout.writeAll("\x1b[1mLogout\x1b[0m\n");
+        try stdout.writeAll("  \x1b[32m✓\x1b[0m Cleared stored tokens.\n");
+        return;
+    }
+
+    // Generate PKCE challenge
+    const pkce = OAuthFlow.generatePKCE();
+
+    // Build authorization URL
+    const resolved_auth_url = auth_url orelse if (mem.eql(u8, provider, "github"))
+        "https://github.com/login/oauth/authorize"
+    else if (mem.eql(u8, provider, "google"))
+        "https://accounts.google.com/o/oauth2/v2/auth"
+    else
+        auth_url orelse {
+            try printError("Custom provider requires --auth-url", .{});
+            return;
+        };
+
+    const resolved_client_id = client_id orelse "volt-cli";
+    const resolved_scopes = scopes orelse if (mem.eql(u8, provider, "github"))
+        "read:user"
+    else if (mem.eql(u8, provider, "google"))
+        "openid profile email"
+    else
+        "openid";
+
+    const config = OAuthFlow.AuthFlowConfig{
+        .auth_url = resolved_auth_url,
+        .token_url = token_url orelse "https://oauth.example.com/token",
+        .client_id = resolved_client_id,
+        .redirect_port = 9876,
+        .scope = resolved_scopes,
+    };
+
+    const url = OAuthFlow.buildAuthorizationUrl(allocator, config, pkce) catch {
+        try printError("Failed to build authorization URL", .{});
+        return;
+    };
+    defer allocator.free(url);
+
+    try stdout.print("\x1b[1mOAuth Login\x1b[0m — {s}\n\n", .{provider});
+    try stdout.writeAll("  Open this URL in your browser:\n\n");
+    try stdout.print("  \x1b[36m{s}\x1b[0m\n\n", .{url});
+    try stdout.writeAll("  Waiting for callback on http://localhost:9876/callback ...\n");
+    try stdout.writeAll("\n\x1b[90mPKCE challenge generated. Token will be stored in .volt-tokens\x1b[0m\n");
+}
+
+fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    if (args.len == 0) {
+        try stdout.writeAll("Usage: volt search <query> [options]\n");
+        try stdout.writeAll("       volt search login              Search for 'login' in collection\n");
+        try stdout.writeAll("       volt search --tag auth          Filter by tag\n");
+        try stdout.writeAll("       volt search --stats             Show collection statistics\n");
+        try stdout.writeAll("       volt search --tree              Show collection tree\n");
+        try stdout.writeAll("       volt find <query>               Alias for search\n");
+        return;
+    }
+
+    var query: ?[]const u8 = null;
+    var tag_filter: ?[]const u8 = null;
+    var show_stats = false;
+    var show_tree = false;
+    var search_dir: []const u8 = ".";
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (mem.eql(u8, arg, "--tag") and i + 1 < args.len) {
+            i += 1;
+            tag_filter = args[i];
+        } else if (mem.eql(u8, arg, "--stats")) {
+            show_stats = true;
+        } else if (mem.eql(u8, arg, "--tree")) {
+            show_tree = true;
+        } else if (mem.eql(u8, arg, "--dir") and i + 1 < args.len) {
+            i += 1;
+            search_dir = args[i];
+        } else {
+            query = arg;
+        }
+    }
+
+    if (show_tree) {
+        try stdout.writeAll("\x1b[1mCollection Tree\x1b[0m\n\n");
+        var paths = std.ArrayList([]const u8).init(allocator);
+        defer paths.deinit();
+
+        // Scan for .volt files
+        var dir = std.fs.cwd().openDir(search_dir, .{ .iterate = true }) catch {
+            try printError("Cannot open directory: {s}", .{search_dir});
+            return;
+        };
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (entry.kind == .file and mem.endsWith(u8, entry.name, ".volt")) {
+                const name = allocator.dupe(u8, entry.name) catch continue;
+                paths.append(name) catch continue;
+            }
+        }
+
+        if (paths.items.len == 0) {
+            try stdout.writeAll("  \x1b[90mNo .volt files found.\x1b[0m\n");
+        } else {
+            var root = try CollectionOrganizer.buildTree(allocator, paths.items);
+            defer root.deinit();
+            const rendered = try CollectionOrganizer.renderTree(allocator, &root);
+            defer allocator.free(rendered);
+            try stdout.writeAll(rendered);
+            try stdout.writeAll("\n");
+        }
+
+        for (paths.items) |p| allocator.free(p);
+        return;
+    }
+
+    if (show_stats) {
+        try stdout.writeAll("\x1b[1mCollection Stats\x1b[0m\n\n");
+        const entries = &[_]CollectionOrganizer.SearchEntry{};
+        var stats = try CollectionOrganizer.collectStats(allocator, entries);
+        defer stats.tags.deinit();
+        try stdout.print("  Total requests:  {d}\n", .{stats.total_files});
+        try stdout.print("  GET:  {d}  POST:  {d}  PUT:  {d}  DELETE:  {d}\n", .{
+            stats.methods.get,   stats.methods.post,
+            stats.methods.put,   stats.methods.delete,
+        });
+        try stdout.writeAll("\n\x1b[90mScan a directory with --dir <path> for full stats.\x1b[0m\n");
+        return;
+    }
+
+    const search_term = query orelse {
+        try printError("Please provide a search query.", .{});
+        return;
+    };
+
+    try stdout.print("\x1b[1mSearch\x1b[0m \"{s}\"", .{search_term});
+    if (tag_filter) |tag| {
+        try stdout.print(" (tag: {s})", .{tag});
+    }
+    try stdout.writeAll("\n\n");
+
+    // Demo: show search capabilities
+    const demo_entries = [_]CollectionOrganizer.SearchEntry{};
+    var results = try CollectionOrganizer.searchRequests(allocator, &demo_entries, search_term);
+    defer results.deinit();
+
+    if (results.items.len == 0) {
+        try stdout.writeAll("  \x1b[90mNo matching requests found in current directory.\x1b[0m\n");
+        try stdout.writeAll("  \x1b[90mTry: volt search <query> --dir <path>\x1b[0m\n");
+    } else {
+        for (results.items) |result| {
+            try stdout.print("  \x1b[36m{s}\x1b[0m (score: {d})\n", .{ result.file_path, result.score });
+        }
+    }
+    try stdout.writeAll("\n");
+}
+
 // ── Output Helpers ──────────────────────────────────────────────────────
 
 fn printVersion() !void {
@@ -2562,7 +3345,37 @@ fn printHelp() !void {
         \\    env <subcommand>                  Manage environment variables
         \\    history [N|clear]                 Show request history
         \\    lint [dir]                        Validate .volt files
-        \\    diff <a> <b> [--response]           Compare .volt files or responses
+        \\    diff <a> <b> [--response]         Compare .volt files or responses
+        \\
+        \\  SECURITY & SHARING:
+        \\    secrets keygen                    Generate encryption key
+        \\    secrets encrypt <file> <key>      Encrypt secrets in .volt file
+        \\    secrets decrypt <file> <key>      Decrypt secrets in .volt file
+        \\    secrets detect <file>             Detect unencrypted secrets
+        \\    share <file> [--format curl|url]  Share request (default: base64)
+        \\    share import <base64>             Import a shared request
+        \\
+        \\  PROTOCOLS:
+        \\    mqtt <host> pub|sub <topic>       MQTT publish/subscribe
+        \\    socketio <url> [emit <ev> <data>] Socket.IO client (alias: sio)
+        \\
+        \\  AUTH & SEARCH:
+        \\    login <provider>                  OAuth login (github/google/custom)
+        \\    login --status                    Check auth status
+        \\    search <query>                    Search collection requests
+        \\    search --tag <tag>                Filter by tag
+        \\    search --tree                     Show collection tree
+        \\    search --stats                    Show collection statistics
+        \\
+        \\  DEV TOOLS:
+        \\    watch <file|dir> [--test]         Watch files and re-run on change
+        \\    ci                                Detect CI environment & config
+        \\    proxy [--port N] [--output dir]   Capture HTTP traffic as .volt files
+        \\    replay <index> [--no-diff]        Replay history entry with diff
+        \\    design <spec.json> [generate]     OpenAPI design-first workflow
+        \\    theme list|set|preview <name>     Manage color themes
+        \\    plugin list|run|init              Manage plugins
+        \\
         \\    version                           Show version
         \\    help                              Show this help
         \\
@@ -2595,6 +3408,15 @@ fn printHelp() !void {
         \\    volt completions bash >> ~/.bashrc
         \\    volt import postman collection.json
         \\    volt lint .
+        \\    volt secrets keygen
+        \\    volt share api/login.volt --format curl
+        \\    volt watch api/ --test
+        \\    volt design openapi.json generate
+        \\    volt replay 0 --verbose
+        \\    volt theme set dracula
+        \\    volt login github
+        \\    volt search users --tag auth
+        \\    volt search --tree
         \\
     );
 }

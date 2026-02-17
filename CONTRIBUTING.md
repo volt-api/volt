@@ -14,7 +14,7 @@ Thanks for your interest in contributing to Volt! This document covers the basic
 # Build
 zig build
 
-# Run tests (all 127 must pass)
+# Run tests (all 366 must pass)
 zig build test
 
 # Build release binary
@@ -60,7 +60,7 @@ examples/
 2. Export it from `src/core/root.zig`
 3. Wire it into `src/main.zig` (CLI command or integration)
 4. Add tests (minimum 2 per module)
-5. Run `zig build test` — all 127+ tests must pass
+5. Run `zig build test` — all 366+ tests must pass
 
 ### Commit Messages
 

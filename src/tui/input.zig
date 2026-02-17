@@ -27,9 +27,11 @@ pub const Key = enum {
     ctrl_s,
     ctrl_r,
     ctrl_l,
+    ctrl_t,
     ctrl_w,
     // Characters
     char,
+    alt_char,
     // Special
     unknown,
     none,
@@ -99,6 +101,7 @@ pub fn readKey() InputEvent {
             17 => .{ .key = .ctrl_q },
             18 => .{ .key = .ctrl_r },
             19 => .{ .key = .ctrl_s },
+            20 => .{ .key = .ctrl_t },
             23 => .{ .key = .ctrl_w },
             27 => .{ .key = .escape },
             127 => .{ .key = .backspace },
@@ -110,8 +113,8 @@ pub fn readKey() InputEvent {
     }
 
     // Escape sequences
-    if (buf[0] == 27 and n >= 3) {
-        if (buf[1] == '[') {
+    if (buf[0] == 27 and n >= 2) {
+        if (n >= 3 and buf[1] == '[') {
             return switch (buf[2]) {
                 'A' => .{ .key = .up },
                 'B' => .{ .key = .down },
@@ -124,6 +127,10 @@ pub fn readKey() InputEvent {
                 '6' => .{ .key = .page_down },
                 else => .{ .key = .unknown },
             };
+        }
+        // Alt+char: ESC followed by printable character
+        if (n == 2 and buf[1] >= 32 and buf[1] < 127) {
+            return .{ .key = .alt_char, .char = buf[1] };
         }
     }
 

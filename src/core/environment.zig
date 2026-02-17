@@ -50,6 +50,22 @@ pub const Environment = struct {
     }
 };
 
+// ── Variable Scope ──────────────────────────────────────────────────────
+
+pub const VariableScope = enum {
+    request,
+    runtime,
+    collection,
+    environment,
+    global,
+    dynamic,
+};
+
+pub const ScopedValue = struct {
+    value: ?[]const u8,
+    scope: VariableScope,
+};
+
 // ── Environment Manager ─────────────────────────────────────────────────
 
 pub const EnvManager = struct {
@@ -57,6 +73,8 @@ pub const EnvManager = struct {
     environments: std.StringHashMap(Environment),
     active_env: ?[]const u8,
     global_vars: std.StringHashMap([]const u8),
+    runtime_vars: std.StringHashMap([]const u8),
+    unresolved_vars: std.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) EnvManager {
         return .{
@@ -64,6 +82,8 @@ pub const EnvManager = struct {
             .environments = std.StringHashMap(Environment).init(allocator),
             .active_env = null,
             .global_vars = std.StringHashMap([]const u8).init(allocator),
+            .runtime_vars = std.StringHashMap([]const u8).init(allocator),
+            .unresolved_vars = std.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -74,6 +94,8 @@ pub const EnvManager = struct {
         }
         self.environments.deinit();
         self.global_vars.deinit();
+        self.runtime_vars.deinit();
+        self.unresolved_vars.deinit();
     }
 
     pub fn createEnv(self: *EnvManager, name: []const u8) !*Environment {
@@ -97,14 +119,17 @@ pub const EnvManager = struct {
         return null;
     }
 
-    /// Resolve a variable by checking: request vars → active env → global vars → dynamic vars
+    /// Resolve a variable by checking: request vars → runtime vars → active env → global vars → dynamic vars
     pub fn resolve(self: *const EnvManager, key: []const u8, request_vars: ?*const std.StringHashMap([]const u8)) ?[]const u8 {
         // 1. Request-level variables
         if (request_vars) |rv| {
             if (rv.get(key)) |val| return val;
         }
 
-        // 2. Active environment
+        // 2. Runtime variables (set during collection runs via extract/set commands)
+        if (self.runtime_vars.get(key)) |val| return val;
+
+        // 3. Active environment
         if (self.active_env) |env_name| {
             if (self.environments.get(env_name)) |env| {
                 if (env.variables.get(key)) |val| return val;
@@ -112,14 +137,59 @@ pub const EnvManager = struct {
             }
         }
 
-        // 3. Global variables
+        // 4. Global variables
         if (self.global_vars.get(key)) |val| return val;
 
         return null;
     }
 
-    /// Interpolate variables in a string: {{var_name}} → resolved value
-    pub fn interpolate(self: *const EnvManager, input: []const u8, request_vars: ?*const std.StringHashMap([]const u8), allocator: Allocator) ![]const u8 {
+    /// Resolve a variable and return both the value and which scope it came from.
+    /// Resolution order: request → runtime → environment → global → dynamic.
+    pub fn resolveWithScope(self: *const EnvManager, key: []const u8, request_vars: ?*const std.StringHashMap([]const u8)) ScopedValue {
+        // 1. Request-level variables
+        if (request_vars) |rv| {
+            if (rv.get(key)) |val| return .{ .value = val, .scope = .request };
+        }
+
+        // 2. Runtime variables
+        if (self.runtime_vars.get(key)) |val| return .{ .value = val, .scope = .runtime };
+
+        // 3. Active environment
+        if (self.active_env) |env_name| {
+            if (self.environments.get(env_name)) |env| {
+                if (env.variables.get(key)) |val| return .{ .value = val, .scope = .environment };
+                if (env.secrets.get(key)) |val| return .{ .value = val, .scope = .environment };
+            }
+        }
+
+        // 4. Global variables
+        if (self.global_vars.get(key)) |val| return .{ .value = val, .scope = .global };
+
+        // 5. Dynamic variables
+        if (mem.startsWith(u8, key, "$")) {
+            const dynamic_val = resolveDynamic(self.allocator, key);
+            if (dynamic_val != null) {
+                // Note: caller must be aware this is a dynamic allocation
+                return .{ .value = dynamic_val, .scope = .dynamic };
+            }
+        }
+
+        return .{ .value = null, .scope = .request };
+    }
+
+    /// Set a runtime variable (used during collection runs via extract/set commands).
+    pub fn setRuntimeVar(self: *EnvManager, key: []const u8, value: []const u8) !void {
+        try self.runtime_vars.put(key, value);
+    }
+
+    /// Clear all runtime variables.
+    pub fn clearRuntimeVars(self: *EnvManager) void {
+        self.runtime_vars.clearAndFree();
+    }
+
+    /// Interpolate variables in a string: {{var_name}} → resolved value.
+    /// Unresolved variables are kept as-is and added to self.unresolved_vars for caller inspection.
+    pub fn interpolate(self: *EnvManager, input: []const u8, request_vars: ?*const std.StringHashMap([]const u8), allocator: Allocator) ![]const u8 {
         var result = std.ArrayList(u8).init(allocator);
 
         var i: usize = 0;
@@ -146,15 +216,17 @@ pub const EnvManager = struct {
                             if (self.resolve(var_name, request_vars)) |val| {
                                 try result.appendSlice(val);
                             } else {
-                                // Keep original placeholder
+                                // Keep original placeholder and track as unresolved
                                 try result.appendSlice(input[i .. end + 2]);
+                                try self.unresolved_vars.append(var_name);
                             }
                         }
                     } else if (self.resolve(var_name, request_vars)) |val| {
                         try result.appendSlice(val);
                     } else {
-                        // Keep original placeholder if unresolved
+                        // Keep original placeholder if unresolved and track it
                         try result.appendSlice(input[i .. end + 2]);
+                        try self.unresolved_vars.append(var_name);
                     }
                     i = end + 2;
                 } else {
@@ -295,4 +367,121 @@ test "unresolved variables kept as-is" {
     defer std.testing.allocator.free(result);
 
     try std.testing.expectEqualStrings("{{unknown_var}}", result);
+}
+
+test "unresolved_vars tracking" {
+    var mgr = EnvManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    const env = try mgr.createEnv("dev");
+    try env.set("host", "localhost");
+    mgr.setActive("dev");
+
+    const result = try mgr.interpolate("{{host}}/{{missing_a}}/{{missing_b}}", null, std.testing.allocator);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("localhost/{{missing_a}}/{{missing_b}}", result);
+
+    // unresolved_vars should contain both missing variable names
+    try std.testing.expectEqual(@as(usize, 2), mgr.unresolved_vars.items.len);
+    try std.testing.expectEqualStrings("missing_a", mgr.unresolved_vars.items[0]);
+    try std.testing.expectEqualStrings("missing_b", mgr.unresolved_vars.items[1]);
+}
+
+test "resolveWithScope returns correct scope" {
+    var mgr = EnvManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    // Set up environment variable
+    const env = try mgr.createEnv("dev");
+    try env.set("env_var", "from_env");
+    mgr.setActive("dev");
+
+    // Set up global variable
+    try mgr.global_vars.put("global_var", "from_global");
+
+    // Set up runtime variable
+    try mgr.setRuntimeVar("runtime_var", "from_runtime");
+
+    // Set up request variables
+    var req_vars = std.StringHashMap([]const u8).init(std.testing.allocator);
+    defer req_vars.deinit();
+    try req_vars.put("req_var", "from_request");
+
+    // Test request scope
+    const req_result = mgr.resolveWithScope("req_var", &req_vars);
+    try std.testing.expectEqualStrings("from_request", req_result.value.?);
+    try std.testing.expect(req_result.scope == .request);
+
+    // Test runtime scope
+    const runtime_result = mgr.resolveWithScope("runtime_var", null);
+    try std.testing.expectEqualStrings("from_runtime", runtime_result.value.?);
+    try std.testing.expect(runtime_result.scope == .runtime);
+
+    // Test environment scope
+    const env_result = mgr.resolveWithScope("env_var", null);
+    try std.testing.expectEqualStrings("from_env", env_result.value.?);
+    try std.testing.expect(env_result.scope == .environment);
+
+    // Test global scope
+    const global_result = mgr.resolveWithScope("global_var", null);
+    try std.testing.expectEqualStrings("from_global", global_result.value.?);
+    try std.testing.expect(global_result.scope == .global);
+
+    // Test not found
+    const not_found = mgr.resolveWithScope("nonexistent", null);
+    try std.testing.expect(not_found.value == null);
+}
+
+test "runtime variable resolution order" {
+    var mgr = EnvManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    // Set the same key at multiple scopes
+    const env = try mgr.createEnv("dev");
+    try env.set("shared_key", "from_env");
+    mgr.setActive("dev");
+    try mgr.global_vars.put("shared_key", "from_global");
+    try mgr.setRuntimeVar("shared_key", "from_runtime");
+
+    // Runtime should win over environment and global
+    try std.testing.expectEqualStrings("from_runtime", mgr.resolve("shared_key", null).?);
+
+    // Request should win over runtime
+    var req_vars = std.StringHashMap([]const u8).init(std.testing.allocator);
+    defer req_vars.deinit();
+    try req_vars.put("shared_key", "from_request");
+    try std.testing.expectEqualStrings("from_request", mgr.resolve("shared_key", &req_vars).?);
+
+    // After clearing runtime vars, environment should be used
+    mgr.clearRuntimeVars();
+    try std.testing.expectEqualStrings("from_env", mgr.resolve("shared_key", null).?);
+}
+
+test "setRuntimeVar and clearRuntimeVars" {
+    var mgr = EnvManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    try mgr.setRuntimeVar("token", "abc123");
+    try mgr.setRuntimeVar("session_id", "sess_xyz");
+
+    try std.testing.expectEqualStrings("abc123", mgr.resolve("token", null).?);
+    try std.testing.expectEqualStrings("sess_xyz", mgr.resolve("session_id", null).?);
+
+    mgr.clearRuntimeVars();
+
+    try std.testing.expect(mgr.resolve("token", null) == null);
+    try std.testing.expect(mgr.resolve("session_id", null) == null);
+}
+
+test "runtime vars interpolation" {
+    var mgr = EnvManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    try mgr.setRuntimeVar("extracted_id", "42");
+
+    const result = try mgr.interpolate("/api/users/{{extracted_id}}", null, std.testing.allocator);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("/api/users/42", result);
 }

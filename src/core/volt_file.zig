@@ -132,6 +132,7 @@ pub const VoltRequest = struct {
     post_script: ?[]const u8 = null,
     post_script_owned: bool = false,
     timeout: ?u32 = null,
+    tags: std.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) VoltRequest {
         return .{
@@ -139,6 +140,7 @@ pub const VoltRequest = struct {
             .headers = std.ArrayList(Header).init(allocator),
             .tests = std.ArrayList(TestAssertion).init(allocator),
             .variables = std.StringHashMap([]const u8).init(allocator),
+            .tags = std.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -155,6 +157,7 @@ pub const VoltRequest = struct {
         self.headers.deinit();
         self.tests.deinit();
         self.variables.deinit();
+        self.tags.deinit();
     }
 
     pub fn addHeader(self: *VoltRequest, name: []const u8, value: []const u8) !void {
@@ -258,6 +261,18 @@ pub fn parse(allocator: Allocator, content: []const u8) ParseError!VoltRequest {
             const val = extractValue(trimmed, "timeout:");
             if (val) |v| {
                 request.timeout = std.fmt.parseInt(u32, v, 10) catch null;
+            }
+            current_section = .none;
+        } else if (mem.startsWith(u8, trimmed, "tags:")) {
+            const val = extractValue(trimmed, "tags:");
+            if (val) |v| {
+                var tag_iter = mem.splitSequence(u8, v, ",");
+                while (tag_iter.next()) |raw_tag| {
+                    const tag = mem.trim(u8, raw_tag, " \t");
+                    if (tag.len > 0) {
+                        request.tags.append(tag) catch return ParseError.OutOfMemory;
+                    }
+                }
             }
             current_section = .none;
         } else if (mem.startsWith(u8, trimmed, "method:")) {
@@ -505,6 +520,16 @@ pub fn serialize(request: *const VoltRequest, allocator: Allocator) ![]const u8 
         try writer.print("timeout: {d}\n", .{t});
     }
 
+    // Tags
+    if (request.tags.items.len > 0) {
+        try writer.writeAll("tags: ");
+        for (request.tags.items, 0..) |tag, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try writer.writeAll(tag);
+        }
+        try writer.writeAll("\n");
+    }
+
     return buf.toOwnedSlice();
 }
 
@@ -569,6 +594,57 @@ test "parse .volt file with tests" {
     try std.testing.expectEqualStrings("status", request.tests.items[0].field);
     try std.testing.expectEqualStrings("equals", request.tests.items[0].operator);
     try std.testing.expectEqualStrings("200", request.tests.items[0].value);
+}
+
+test "parse .volt file with tags" {
+    const content =
+        \\method: GET
+        \\url: https://api.example.com/users
+        \\tags: auth, users, v2
+    ;
+    var request = try parse(std.testing.allocator, content);
+    defer request.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), request.tags.items.len);
+    try std.testing.expectEqualStrings("auth", request.tags.items[0]);
+    try std.testing.expectEqualStrings("users", request.tags.items[1]);
+    try std.testing.expectEqualStrings("v2", request.tags.items[2]);
+}
+
+test "parse .volt file with single tag" {
+    const content =
+        \\method: POST
+        \\url: https://api.example.com/login
+        \\tags: auth
+    ;
+    var request = try parse(std.testing.allocator, content);
+    defer request.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), request.tags.items.len);
+    try std.testing.expectEqualStrings("auth", request.tags.items[0]);
+}
+
+test "serialize tags roundtrip" {
+    var request = VoltRequest.init(std.testing.allocator);
+    defer request.deinit();
+    request.method = .GET;
+    request.url = "https://api.example.com/users";
+    try request.tags.append("auth");
+    try request.tags.append("users");
+    try request.tags.append("v2");
+
+    const output = try serialize(&request, std.testing.allocator);
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(mem.indexOf(u8, output, "tags: auth, users, v2") != null);
+
+    // Verify roundtrip
+    var parsed = try parse(std.testing.allocator, output);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 3), parsed.tags.items.len);
+    try std.testing.expectEqualStrings("auth", parsed.tags.items[0]);
+    try std.testing.expectEqualStrings("users", parsed.tags.items[1]);
+    try std.testing.expectEqualStrings("v2", parsed.tags.items[2]);
 }
 
 test "serialize and roundtrip" {
