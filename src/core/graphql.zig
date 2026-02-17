@@ -7,14 +7,19 @@ const VoltFile = @import("volt_file.zig");
 // ── GraphQL Support ─────────────────────────────────────────────────────
 
 pub const GraphQLRequest = struct {
+    allocator: Allocator,
     endpoint: []const u8,
     query: []const u8,
+    query_owned: bool = false,
+    raw_body: ?[]const u8 = null,
+    raw_body_owned: bool = false,
     variables: ?[]const u8 = null,
     operation_name: ?[]const u8 = null,
     headers: std.ArrayList(VoltFile.Header),
 
     pub fn init(allocator: Allocator, endpoint: []const u8) GraphQLRequest {
         return .{
+            .allocator = allocator,
             .endpoint = endpoint,
             .query = "",
             .headers = std.ArrayList(VoltFile.Header).init(allocator),
@@ -22,6 +27,12 @@ pub const GraphQLRequest = struct {
     }
 
     pub fn deinit(self: *GraphQLRequest) void {
+        if (self.query_owned) {
+            self.allocator.free(self.query);
+        }
+        if (self.raw_body_owned) {
+            if (self.raw_body) |rb| self.allocator.free(rb);
+        }
         self.headers.deinit();
     }
 };
@@ -112,14 +123,22 @@ pub fn execute(
         try http_req.addHeader(h.name, h.value);
     }
 
-    // Build request body
-    const body = try buildRequestBody(allocator, gql_req);
-    http_req.body = body;
+    // Build request body (use raw_body if already JSON-wrapped)
+    var body_allocated = false;
+    if (gql_req.raw_body) |rb| {
+        http_req.body = rb;
+    } else {
+        const body = try buildRequestBody(allocator, gql_req);
+        http_req.body = body;
+        body_allocated = true;
+    }
     http_req.body_type = .json;
 
     // Execute
     gql_resp.http_response = try HttpClient.execute(allocator, &http_req, config);
-    allocator.free(body);
+    if (body_allocated) {
+        if (http_req.body) |b| allocator.free(b);
+    }
 
     // Parse response for errors
     const resp_body = gql_resp.http_response.bodySlice();
@@ -177,9 +196,19 @@ pub fn parseGraphQLVolt(allocator: Allocator, content: []const u8) !GraphQLReque
         try gql_req.headers.append(h);
     }
 
-    // The body contains the GraphQL query
+    // The body contains the GraphQL query (dupe to survive volt_req deinit)
     if (volt_req.body) |body| {
-        gql_req.query = body;
+        const trimmed_body = mem.trim(u8, body, " \t\n\r");
+        // Detect if body is already a JSON-wrapped query (e.g. {"query":"..."})
+        if (mem.startsWith(u8, trimmed_body, "{") and mem.indexOf(u8, trimmed_body, "\"query\"") != null) {
+            // Body is pre-wrapped JSON — use it directly, skip buildRequestBody
+            gql_req.raw_body = try allocator.dupe(u8, trimmed_body);
+            gql_req.raw_body_owned = true;
+        } else {
+            // Raw GraphQL query — will be wrapped by buildRequestBody
+            gql_req.query = try allocator.dupe(u8, trimmed_body);
+            gql_req.query_owned = true;
+        }
     }
 
     // Check variables section for graphql_variables

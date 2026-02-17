@@ -7,7 +7,7 @@ headers:
 body:
   type: json
   content: |
-    {"query": "{ countries(filter: { continent: { eq: \"EU\" } }) { name capital currency } }"}
+    {"query":"{ countries(filter: { continent: { eq: \"EU\" } }) { name capital currency } }"}
 tests:
   - status equals 200
   - body contains countries

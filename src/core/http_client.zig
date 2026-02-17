@@ -144,11 +144,17 @@ pub fn execute(
         }
     } else if (request.auth.type == .basic) {
         if (request.auth.username != null and request.auth.password != null) {
-            // Basic auth - encode credentials
+            // Basic auth - Base64 encode username:password
             if (header_count < headers_buf.len) {
+                var cred_buf: [256]u8 = undefined;
+                const cred_str = std.fmt.bufPrint(&cred_buf, "{s}:{s}", .{ request.auth.username.?, request.auth.password.? }) catch "invalid";
+                var b64_buf: [512]u8 = undefined;
+                const encoded = std.base64.standard.Encoder.encode(&b64_buf, cred_str);
+                var auth_header_buf: [600]u8 = undefined;
+                const auth_value = std.fmt.bufPrint(&auth_header_buf, "Basic {s}", .{encoded}) catch "Basic ";
                 headers_buf[header_count] = .{
                     .name = "Authorization",
-                    .value = "Basic (credentials)",
+                    .value = auth_value,
                 };
                 header_count += 1;
             }

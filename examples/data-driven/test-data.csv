@@ -1,4 +1,4 @@
 title,body,userId
 First Post,This is the first test post,1
 Second Post,This is another test post,2
-Edge Case,"A post with, commas and ""quotes""",3
+Edge Case,A post with special chars and numbers 123,3

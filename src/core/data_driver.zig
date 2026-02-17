@@ -99,7 +99,9 @@ pub fn parseCSV(allocator: Allocator, content: []const u8) !DataSet {
     defer header_fields.deinit();
 
     for (header_fields.items) |hf| {
-        try dataset.column_names.append(mem.trim(u8, hf, " \t"));
+        const duped_key = try allocator.dupe(u8, mem.trim(u8, hf, " \t"));
+        try dataset.owned_strings.append(duped_key);
+        try dataset.column_names.append(duped_key);
     }
 
     // Parse data rows
@@ -111,13 +113,15 @@ pub fn parseCSV(allocator: Allocator, content: []const u8) !DataSet {
         errdefer row.deinit();
 
         for (dataset.column_names.items, 0..) |col_name, col_idx| {
-            const value = if (col_idx < value_fields.items.len)
+            const raw_value = if (col_idx < value_fields.items.len)
                 mem.trim(u8, value_fields.items[col_idx], " \t")
             else
                 "";
+            const duped_value = try allocator.dupe(u8, raw_value);
+            try dataset.owned_strings.append(duped_value);
             try row.fields.append(.{
                 .name = col_name,
-                .value = value,
+                .value = duped_value,
             });
         }
 

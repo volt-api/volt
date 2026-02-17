@@ -55,6 +55,7 @@ const H2 = core.H2;
 const OAuthFlow = core.OAuthFlow;
 const ResponseViewer = core.ResponseViewer;
 const CollectionOrganizer = core.CollectionOrganizer;
+const WebServer = core.WebServer;
 const App = @import("tui/app.zig").App;
 
 const version = "1.0.0";
@@ -149,6 +150,10 @@ pub fn main() !void {
         try cmdReplay(allocator, args[2..]);
     } else if (mem.eql(u8, command, "login") or mem.eql(u8, command, "auth-login")) {
         try cmdAuthLogin(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "ui")) {
+        try cmdUi(allocator, args[2..]);
+    } else if (mem.eql(u8, command, "serve")) {
+        try cmdServe(allocator, args[2..]);
     } else if (mem.eql(u8, command, "search") or mem.eql(u8, command, "find")) {
         try cmdSearch(allocator, args[2..]);
     } else if (mem.eql(u8, command, "version") or mem.eql(u8, command, "--version") or mem.eql(u8, command, "-v")) {
@@ -631,14 +636,28 @@ fn runTestSuite(
     var files_to_test = std.ArrayList([]const u8).init(allocator);
     defer {
         for (files_to_test.items) |f| {
-            if (specified_files.len == 0) allocator.free(f);
+            allocator.free(f);
         }
         files_to_test.deinit();
     }
 
     if (specified_files.len > 0) {
         for (specified_files) |f| {
-            try files_to_test.append(f);
+            // Check if the argument is a directory
+            var opened_dir = std.fs.cwd().openDir(f, .{ .iterate = true }) catch {
+                // Not a directory, treat as a file
+                try files_to_test.append(try allocator.dupe(u8, f));
+                continue;
+            };
+            defer opened_dir.close();
+            var iter = opened_dir.iterate();
+            while (try iter.next()) |entry| {
+                if (entry.kind == .file and mem.endsWith(u8, entry.name, ".volt") and !mem.startsWith(u8, entry.name, "_")) {
+                    const dir_path = mem.trimRight(u8, f, "/\\");
+                    const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name });
+                    try files_to_test.append(full_path);
+                }
+            }
         }
     } else {
         var dir = std.fs.cwd().openDir(".", .{ .iterate = true }) catch {
@@ -681,7 +700,13 @@ fn runTestSuite(
 
     // For report generation
     var report_entries = std.ArrayList(TestReport.ReportEntry).init(allocator);
-    defer report_entries.deinit();
+    defer {
+        for (report_entries.items) |entry| {
+            allocator.free(entry.test_name);
+            if (entry.expected) |exp| allocator.free(exp);
+        }
+        report_entries.deinit();
+    }
     var junit_report = JUnit.TestReport.init(allocator);
     defer junit_report.deinit();
 
@@ -713,6 +738,30 @@ fn runTestSuite(
 
             if (request.tests.items.len == 0) break;
 
+            // Interpolate variables (data-driven + dynamic) into URL, body, headers
+            var resolved_url_alloc: ?[]const u8 = null;
+            defer if (resolved_url_alloc) |ru| allocator.free(ru);
+            if (request.variables.count() > 0) {
+                var env_mgr = Environment.EnvManager.init(allocator);
+                defer env_mgr.deinit();
+
+                // Interpolate URL
+                resolved_url_alloc = env_mgr.interpolate(request.url, &request.variables, allocator) catch null;
+                if (resolved_url_alloc) |ru| request.url = ru;
+
+                // Interpolate body
+                if (request.body) |body| {
+                    const resolved_body = env_mgr.interpolate(body, &request.variables, allocator) catch null;
+                    if (resolved_body) |rb| {
+                        if (request.body_owned) {
+                            allocator.free(body);
+                        }
+                        request.body = rb;
+                        request.body_owned = true;
+                    }
+                }
+            }
+
             if (data_iterations > 1) {
                 try stdout.print("\n\x1b[1m{s}\x1b[0m (row {d}/{d})\n", .{ file_path, data_idx + 1, data_iterations });
             } else {
@@ -735,34 +784,36 @@ fn runTestSuite(
                 total_tests += 1;
                 const test_passed = evaluateTestAlloc(&t, &response, allocator);
                 const test_expr = std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ t.field, t.operator, t.value }) catch "?";
-                defer allocator.free(test_expr);
 
                 if (test_passed) {
                     passed += 1;
-                    try stdout.print("  \x1b[32m✓\x1b[0m {s} {s} {s}\n", .{ t.field, t.operator, t.value });
+                    try stdout.print("  \x1b[32m✓\x1b[0m {s}\n", .{test_expr});
                 } else {
                     failed += 1;
-                    try stdout.print("  \x1b[31m✗\x1b[0m {s} {s} {s}\n", .{ t.field, t.operator, t.value });
+                    try stdout.print("  \x1b[31m✗\x1b[0m {s}\n", .{test_expr});
                 }
 
                 // Collect for reports
                 if (report_format != null) {
+                    const expected_dupe = if (t.value.len > 0) allocator.dupe(u8, t.value) catch null else null;
                     try report_entries.append(.{
                         .file = file_path,
-                        .test_name = t.field,
+                        .test_name = test_expr,
                         .passed = test_passed,
                         .actual = null,
-                        .expected = t.value,
+                        .expected = expected_dupe,
                         .time_ms = req_time_ms,
                     });
                     try junit_suite.addCase(.{
-                        .name = t.field,
+                        .name = test_expr,
                         .classname = file_path,
                         .time_seconds = req_time_ms / 1000.0,
                         .passed = test_passed,
                         .failure_message = if (!test_passed) "Assertion failed" else null,
                         .failure_detail = null,
                     });
+                } else {
+                    allocator.free(test_expr);
                 }
             }
         }
@@ -1009,6 +1060,47 @@ fn cmdMock(allocator: std.mem.Allocator, args: []const []const u8) !void {
     defer server.deinit();
 
     try server.loadCollection(dir_path);
+
+    try server.serve();
+}
+
+fn cmdUi(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var port: u16 = 8080;
+
+    // Parse flags
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if ((mem.eql(u8, args[i], "--port") or mem.eql(u8, args[i], "-p")) and i + 1 < args.len) {
+            port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8080;
+            i += 1;
+        }
+    }
+
+    var server = WebServer.WebServer.init(allocator, port, .local);
+    defer server.deinit();
+
+    // Open browser
+    const url = std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port}) catch "http://127.0.0.1:8080";
+    defer if (!mem.eql(u8, url, "http://127.0.0.1:8080")) allocator.free(url);
+    WebServer.openBrowser(url);
+
+    try server.serve();
+}
+
+fn cmdServe(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var port: u16 = 8080;
+
+    // Parse flags
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if ((mem.eql(u8, args[i], "--port") or mem.eql(u8, args[i], "-p")) and i + 1 < args.len) {
+            port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8080;
+            i += 1;
+        }
+    }
+
+    var server = WebServer.WebServer.init(allocator, port, .public);
+    defer server.deinit();
 
     try server.serve();
 }
@@ -3376,6 +3468,10 @@ fn printHelp() !void {
         \\    theme list|set|preview <name>     Manage color themes
         \\    plugin list|run|init              Manage plugins
         \\
+        \\  WEB UI:
+        \\    ui [--port N]                     Open web UI in browser (localhost)
+        \\    serve [--port N]                  Start web UI server (0.0.0.0)
+        \\
         \\    version                           Show version
         \\    help                              Show this help
         \\
@@ -3417,6 +3513,9 @@ fn printHelp() !void {
         \\    volt login github
         \\    volt search users --tag auth
         \\    volt search --tree
+        \\    volt ui
+        \\    volt ui --port 3000
+        \\    volt serve --port 8080
         \\
     );
 }

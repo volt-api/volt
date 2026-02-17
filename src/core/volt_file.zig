@@ -363,19 +363,18 @@ pub fn parse(allocator: Allocator, content: []const u8) ParseError!VoltRequest {
                 request.auth.key_location = extractValue(trimmed, "key_location:");
             }
         } else if (current_section == .tests and mem.startsWith(u8, trimmed, "- ")) {
-            // Parse test: "- status equals 200"
+            // Parse test: "- status equals 200" or "- $.field exists"
             const entry = trimmed[2..];
             var parts = mem.splitSequence(u8, entry, " ");
             const field = parts.next() orelse continue;
             const operator = parts.next() orelse continue;
             const value = parts.rest();
-            if (value.len > 0) {
-                request.tests.append(.{
-                    .field = field,
-                    .operator = operator,
-                    .value = value,
-                }) catch return ParseError.OutOfMemory;
-            }
+            // Allow operators without a value (e.g., "exists")
+            request.tests.append(.{
+                .field = field,
+                .operator = operator,
+                .value = if (value.len > 0) value else "",
+            }) catch return ParseError.OutOfMemory;
         } else if (current_section == .variables) {
             // Parse "key: value" under variables section
             if (mem.indexOf(u8, trimmed, ": ")) |colon_pos| {
