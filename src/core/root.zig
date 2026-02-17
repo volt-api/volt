@@ -69,6 +69,10 @@ pub const H2 = @import("h2.zig");
 pub const OAuthFlow = @import("oauth_flow.zig");
 pub const ResponseViewer = @import("response_viewer.zig");
 
+// Web UI modules
+pub const WebServer = @import("web_server.zig");
+pub const WebApi = @import("web_api.zig");
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

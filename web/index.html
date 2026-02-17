@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volt — API Client</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ── Toolbar ────────────────────────────────────────────────────── -->
+<header class="toolbar">
+    <div class="toolbar-left">
+        <span class="logo">&#9889; Volt</span>
+        <span class="version">v1.0.0</span>
+    </div>
+    <div class="toolbar-center">
+        <label class="env-selector">
+            <span class="env-label">Env:</span>
+            <select id="env-select">
+                <option value="">No Environment</option>
+            </select>
+        </label>
+    </div>
+    <div class="toolbar-right">
+        <button id="btn-import" class="toolbar-btn" title="Import (Ctrl+I)">Import</button>
+        <button id="btn-history" class="toolbar-btn" title="History (Ctrl+H)">History</button>
+        <select id="theme-select" class="theme-selector" title="Theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="solarized">Solarized</option>
+            <option value="nord">Nord</option>
+            <option value="dracula">Dracula</option>
+            <option value="monokai">Monokai</option>
+        </select>
+        <button id="btn-settings" class="toolbar-btn" title="Settings">Settings</button>
+    </div>
+</header>
+
+<!-- ── Main Layout ────────────────────────────────────────────────── -->
+<div class="main-layout">
+
+    <!-- ── Sidebar ────────────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <input type="text" id="search-input" class="search-box" placeholder="Search requests...">
+            <button id="btn-new-request" class="btn-icon" title="New Request">+</button>
+        </div>
+        <div class="sidebar-tabs">
+            <button class="sidebar-tab active" data-tab="collections">Collections</button>
+            <button class="sidebar-tab" data-tab="history-tab">History</button>
+        </div>
+        <div id="collection-tree" class="sidebar-content"></div>
+        <div class="sidebar-toggle" id="sidebar-toggle" title="Toggle Sidebar">&lsaquo;</div>
+    </aside>
+
+    <!-- ── Workspace ──────────────────────────────────────────────── -->
+    <main class="workspace">
+
+        <!-- ── Request Builder ────────────────────────────────────── -->
+        <section class="request-builder">
+            <div class="url-bar">
+                <select id="method-select" class="method-select">
+                    <option value="GET" class="method-get">GET</option>
+                    <option value="POST" class="method-post">POST</option>
+                    <option value="PUT" class="method-put">PUT</option>
+                    <option value="PATCH" class="method-patch">PATCH</option>
+                    <option value="DELETE" class="method-delete">DELETE</option>
+                    <option value="HEAD" class="method-head">HEAD</option>
+                    <option value="OPTIONS" class="method-options">OPTIONS</option>
+                </select>
+                <input type="text" id="url-input" class="url-input" placeholder="Enter URL or paste cURL..." autofocus>
+                <button id="btn-send" class="btn-send" title="Send (Ctrl+Enter)">Send</button>
+            </div>
+
+            <div class="request-tabs">
+                <button class="req-tab active" data-tab="params">Params</button>
+                <button class="req-tab" data-tab="headers">Headers</button>
+                <button class="req-tab" data-tab="body">Body</button>
+                <button class="req-tab" data-tab="auth">Auth</button>
+                <button class="req-tab" data-tab="tests">Tests</button>
+            </div>
+
+            <div class="request-panels">
+                <!-- Params Panel -->
+                <div class="req-panel active" id="panel-params">
+                    <table class="kv-table" id="params-table">
+                        <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                    <button class="btn-add-row" data-target="params-table">+ Add Parameter</button>
+                </div>
+
+                <!-- Headers Panel -->
+                <div class="req-panel" id="panel-headers">
+                    <table class="kv-table" id="headers-table">
+                        <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                    <button class="btn-add-row" data-target="headers-table">+ Add Header</button>
+                </div>
+
+                <!-- Body Panel -->
+                <div class="req-panel" id="panel-body">
+                    <div class="body-type-bar">
+                        <label><input type="radio" name="body-type" value="none" checked> None</label>
+                        <label><input type="radio" name="body-type" value="json"> JSON</label>
+                        <label><input type="radio" name="body-type" value="form"> Form</label>
+                        <label><input type="radio" name="body-type" value="text"> Text</label>
+                    </div>
+                    <textarea id="body-editor" class="body-editor" placeholder='{"key": "value"}'></textarea>
+                </div>
+
+                <!-- Auth Panel -->
+                <div class="req-panel" id="panel-auth">
+                    <div class="auth-type-bar">
+                        <select id="auth-type">
+                            <option value="none">No Auth</option>
+                            <option value="bearer">Bearer Token</option>
+                            <option value="basic">Basic Auth</option>
+                            <option value="apikey">API Key</option>
+                        </select>
+                    </div>
+                    <div id="auth-fields" class="auth-fields"></div>
+                </div>
+
+                <!-- Tests Panel -->
+                <div class="req-panel" id="panel-tests">
+                    <textarea id="tests-editor" class="body-editor" placeholder="status == 200&#10;$.name == &quot;John&quot;&#10;headers.content-type contains json"></textarea>
+                    <button id="btn-generate-tests" class="btn-secondary">Auto-Generate Tests</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Response Viewer ────────────────────────────────────── -->
+        <section class="response-viewer" id="response-section">
+            <div class="response-meta" id="response-meta">
+                <span class="status-badge" id="response-status"></span>
+                <span class="response-time" id="response-time"></span>
+                <span class="response-size" id="response-size"></span>
+                <div class="response-actions">
+                    <button id="btn-copy-response" class="btn-icon" title="Copy Response">Copy</button>
+                    <button id="btn-export" class="btn-icon" title="Export">Export</button>
+                    <button id="btn-save-as-volt" class="btn-icon" title="Save as .volt">Save .volt</button>
+                </div>
+            </div>
+
+            <div class="response-tabs">
+                <button class="resp-tab active" data-tab="resp-body">Body</button>
+                <button class="resp-tab" data-tab="resp-headers">Headers</button>
+                <button class="resp-tab" data-tab="resp-timing">Timing</button>
+                <button class="resp-tab" data-tab="resp-tests">Tests</button>
+            </div>
+
+            <div class="response-panels">
+                <div class="resp-panel active" id="panel-resp-body">
+                    <div class="response-body-toolbar">
+                        <button class="view-toggle active" data-view="pretty">Pretty</button>
+                        <button class="view-toggle" data-view="raw">Raw</button>
+                        <button class="view-toggle" data-view="preview">Preview</button>
+                    </div>
+                    <pre class="response-body" id="response-body"><span class="placeholder">Send a request to see the response</span></pre>
+                </div>
+
+                <div class="resp-panel" id="panel-resp-headers">
+                    <table class="response-headers-table" id="response-headers-table">
+                        <thead><tr><th>Name</th><th>Value</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <div class="resp-panel" id="panel-resp-timing">
+                    <div class="timing-waterfall" id="timing-waterfall"></div>
+                </div>
+
+                <div class="resp-panel" id="panel-resp-tests">
+                    <div class="test-results" id="test-results">
+                        <span class="placeholder">Add tests in the request panel to see results</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Empty state -->
+            <div class="response-empty" id="response-empty">
+                <div class="empty-icon">&#9889;</div>
+                <p>Enter a URL and hit Send to get started</p>
+                <p class="muted">Ctrl+Enter to send &bull; Ctrl+S to save &bull; Ctrl+L to clear</p>
+            </div>
+        </section>
+    </main>
+</div>
+
+<!-- ── Modals ─────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+        <div class="modal-header">
+            <h3 id="modal-title">Modal</h3>
+            <button class="modal-close" id="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+    </div>
+</div>
+
+<!-- ── Status Bar ─────────────────────────────────────────────────── -->
+<footer class="status-bar">
+    <span id="status-message">Ready</span>
+    <span class="status-right">
+        <span id="connection-status" class="conn-dot connected" title="Connected to Volt backend"></span>
+        Volt Web UI
+    </span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

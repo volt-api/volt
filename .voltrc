@@ -1,0 +1,29 @@
+# Volt Project Configuration
+# Place this file in your project root as .voltrc
+
+# Base URL for all requests (prepended to relative URLs)
+# base_url: https://api.example.com
+
+# Default environment
+# environment: development
+
+# Request timeout in milliseconds
+timeout: 30000
+
+# Default headers applied to all requests
+headers:
+  - Accept: application/json
+  - User-Agent: Volt/1.0.0
+
+# Output format: pretty | compact | raw
+output: pretty
+
+# Enable colored output
+color: true
+
+# Follow HTTP redirects
+follow_redirects: true
+max_redirects: 10
+
+# SSL verification
+verify_ssl: true

@@ -1,50 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="380" viewBox="0 0 720 380">
+<svg xmlns="http://www.w3.org/2000/svg" width="750" height="420" viewBox="0 0 750 420">
   <defs>
-    <style>
-      .bg { fill: #1a1b26; }
-      .titlebar { fill: #24283b; }
-      .dot-red { fill: #f7768e; }
-      .dot-yellow { fill: #e0af68; }
-      .dot-green { fill: #9ece6a; }
-      .title { fill: #a9b1d6; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; }
-      .prompt { fill: #7aa2f7; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
-      .cmd { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
-      .file { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
-      .pass { fill: #9ece6a; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
-      .assert { fill: #a9b1d6; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
-      .summary { fill: #c0caf5; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
-      .meta { fill: #565f89; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; }
-      .green { fill: #9ece6a; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
-      .red { fill: #f7768e; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; font-weight: bold; }
-    </style>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1b2e"/>
+      <stop offset="100%" stop-color="#151621"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
   </defs>
+
   <!-- Window -->
-  <rect class="bg" width="720" height="380" rx="10"/>
-  <rect class="titlebar" width="720" height="38" rx="10"/>
-  <rect class="titlebar" y="28" width="720" height="10"/>
-  <!-- Traffic lights -->
-  <circle class="dot-red" cx="20" cy="19" r="6"/>
-  <circle class="dot-yellow" cx="40" cy="19" r="6"/>
-  <circle class="dot-green" cx="60" cy="19" r="6"/>
-  <text class="title" x="360" y="24" text-anchor="middle">volt test</text>
-  <!-- Content -->
-  <text class="prompt" x="20" y="70">$</text>
-  <text class="cmd" x="36" y="70"> volt test examples/</text>
+  <rect width="750" height="420" rx="12" fill="url(#bgGrad)" filter="url(#shadow)"/>
+  <rect width="750" height="40" rx="12" fill="#282a3a"/>
+  <rect y="30" width="750" height="10" fill="#282a3a"/>
+  <circle cx="22" cy="20" r="7" fill="#ff5f57"/>
+  <circle cx="44" cy="20" r="7" fill="#febc2e"/>
+  <circle cx="66" cy="20" r="7" fill="#28c840"/>
+  <text x="375" y="25" text-anchor="middle" fill="#8b8fa3" font-family="'SF Mono',Consolas,monospace" font-size="13">Terminal</text>
+
+  <!-- Prompt -->
+  <text x="24" y="72" fill="#7aa2f7" font-family="'SF Mono',Consolas,monospace" font-size="14.5" font-weight="bold">$</text>
+  <text x="42" y="72" fill="#c0caf5" font-family="'SF Mono',Consolas,monospace" font-size="14.5"> volt test api/</text>
+
   <!-- File 1 -->
-  <text class="file" x="20" y="105">get-users.volt</text>
-  <text class="pass" x="30" y="127">  &#x2713;</text><text class="assert" x="52" y="127"> status equals 200</text>
-  <text class="pass" x="30" y="149">  &#x2713;</text><text class="assert" x="52" y="149"> header.content-type contains json</text>
+  <text x="24" y="108" fill="#c0caf5" font-family="'SF Mono',Consolas,monospace" font-size="14.5" font-weight="bold">api/get-users.volt</text>
+  <text x="40" y="132" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="132" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">status equals 200</text>
+  <text x="40" y="154" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="154" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">header.content-type contains json</text>
+
   <!-- File 2 -->
-  <text class="file" x="20" y="184">jsonpath-tests.volt</text>
-  <text class="pass" x="30" y="206">  &#x2713;</text><text class="assert" x="52" y="206"> status equals 200</text>
-  <text class="pass" x="30" y="228">  &#x2713;</text><text class="assert" x="52" y="228"> $.name equals Leanne Graham</text>
-  <text class="pass" x="30" y="250">  &#x2713;</text><text class="assert" x="52" y="250"> $.email equals Sincere@april.biz</text>
-  <text class="pass" x="30" y="272">  &#x2713;</text><text class="assert" x="52" y="272"> $.address.city equals Gwenborough</text>
-  <text class="pass" x="30" y="294">  &#x2713;</text><text class="assert" x="52" y="294"> $.company.name equals Romaguera-Crona</text>
+  <text x="24" y="190" fill="#c0caf5" font-family="'SF Mono',Consolas,monospace" font-size="14.5" font-weight="bold">api/jsonpath-tests.volt</text>
+  <text x="40" y="214" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="214" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">status equals 200</text>
+  <text x="40" y="236" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="236" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">$.name equals Leanne Graham</text>
+  <text x="40" y="258" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="258" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">$.email equals Sincere@april.biz</text>
+  <text x="40" y="280" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="280" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">$.address.city equals Gwenborough</text>
+  <text x="40" y="302" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">&#x2713;</text>
+  <text x="62" y="302" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14">$.company.name equals Romaguera-Crona</text>
+
+  <!-- Divider -->
+  <line x1="24" y1="326" x2="726" y2="326" stroke="#282a3a" stroke-width="1"/>
+
   <!-- Summary -->
-  <text class="summary" x="20" y="340">Results:</text>
-  <text class="assert" x="95" y="340"> 7 total,</text>
-  <text class="green" x="185" y="340"> 7 passed</text><text class="assert" x="265" y="340">,</text>
-  <text class="red" x="275" y="340"> 0 failed</text>
-  <text class="meta" x="365" y="340"> (243ms)</text>
+  <text x="24" y="354" fill="#c0caf5" font-family="'SF Mono',Consolas,monospace" font-size="15" font-weight="bold">Results:</text>
+  <text x="120" y="354" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14.5"> 7 total, </text>
+  <text x="222" y="354" fill="#9ece6a" font-family="'SF Mono',Consolas,monospace" font-size="14.5" font-weight="bold">7 passed</text>
+  <text x="310" y="354" fill="#a9b1d6" font-family="'SF Mono',Consolas,monospace" font-size="14.5">, </text>
+  <text x="328" y="354" fill="#f7768e" font-family="'SF Mono',Consolas,monospace" font-size="14.5" font-weight="bold">0 failed</text>
+
+  <!-- Timing -->
+  <text x="24" y="390" fill="#565f89" font-family="'SF Mono',Consolas,monospace" font-size="13">Completed in 243ms</text>
 </svg>

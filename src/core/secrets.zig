@@ -136,6 +136,19 @@ pub fn isLikelySecret(value: []const u8) bool {
     if (mem.startsWith(u8, value, "AKIA")) return true;
     if (mem.startsWith(u8, value, "Bearer ")) return true;
 
+    // Check for sensitive field names with values
+    const sensitive_prefixes = [_][]const u8{ "token:", "password:", "secret:", "api_key:", "apikey:", "key:", "auth_token:", "access_token:" };
+    const trimmed = mem.trim(u8, value, " \t");
+    for (&sensitive_prefixes) |prefix| {
+        if (mem.startsWith(u8, trimmed, prefix)) {
+            const after = mem.trim(u8, trimmed[prefix.len..], " \t");
+            // Has a non-empty value that isn't already encrypted or a placeholder
+            if (after.len > 0 and !mem.startsWith(u8, after, "${{encrypted:") and !mem.startsWith(u8, after, "{{")) {
+                return true;
+            }
+        }
+    }
+
     // Long mixed alphanumeric strings (length > 20) are likely secrets
     if (value.len > 20) {
         var has_upper = false;
@@ -157,7 +170,7 @@ pub fn isLikelySecret(value: []const u8) bool {
         }
 
         // If most characters are alphanumeric and we have a mix, likely a secret
-        if (has_upper and has_lower and has_digit and alnum_count > value.len / 2) {
+        if ((has_upper or has_lower) and has_digit and alnum_count > value.len / 2) {
             return true;
         }
     }
