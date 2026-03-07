@@ -45,16 +45,29 @@ All notable changes to Volt will be documented in this file.
 - Plugin sandboxed execution with timeout control
 - Additional color themes (gruvbox, catppuccin)
 - GitHub Sponsors funding configuration
+- `yaml_to_json.zig` — YAML-to-JSON converter for OpenAPI spec import (9 tests)
+- OpenAPI import now supports both JSON and YAML specs
+- `volt export openapi <dir>` — export combined OpenAPI spec from a directory of .volt files
+- `volt lint <file.volt>` — lint a single .volt file (previously directories only)
+- Collection runner recurses into subdirectories (e.g. `01-auth/`, `02-data/`)
+- cURL import `--output` accepts directories (auto-generates `imported.volt`)
+- Share serialization infers body_type (json/xml/raw) from body content
 
 ### Fixed
 - Response header memory safety — headers no longer reference stack-allocated buffer after `execute()` returns
 - Session directory creation error handling (was silently swallowing errors)
 - Postman import handles 50MB+ collections without memory issues
+- 151 silent `catch {}` blocks replaced with proper error logging across 19 modules
+- OpenAPI import no longer silently returns 0 endpoints for YAML specs
+- `_env.volt` now loads correctly in both YAML-like and INI-style formats
+- `volt env get` correctly resolves variable values
+- `volt plugin init` creates directory and plugin.json scaffold
+- Collection headers from `_collection.volt` properly inherited by requests
 
 ### Changed
-- Module count: 56 → 72
-- Test count: 366 → 653
-- Lines of code: 31K → 49K+
+- Module count: 56 → 78
+- Test count: 366 → 816
+- Lines of code: 31K → 50K+
 
 ## [1.0.1] - 2026-02-15
 

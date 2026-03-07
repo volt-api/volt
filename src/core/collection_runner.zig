@@ -122,9 +122,20 @@ pub fn runCollection(
 
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        if (entry.kind != .file or !mem.endsWith(u8, entry.name, ".volt")) continue;
-        if (mem.startsWith(u8, entry.name, "_")) continue;
-        try files.append(try allocator.dupe(u8, entry.name));
+        if (entry.kind == .file and mem.endsWith(u8, entry.name, ".volt") and !mem.startsWith(u8, entry.name, "_")) {
+            try files.append(try allocator.dupe(u8, entry.name));
+        } else if (entry.kind == .directory and !mem.startsWith(u8, entry.name, ".") and !mem.startsWith(u8, entry.name, "_")) {
+            // Recurse into subdirectory
+            var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+            defer sub_dir.close();
+            var sub_iter = sub_dir.iterate();
+            while (try sub_iter.next()) |sub_entry| {
+                if (sub_entry.kind != .file or !mem.endsWith(u8, sub_entry.name, ".volt")) continue;
+                if (mem.startsWith(u8, sub_entry.name, "_")) continue;
+                const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ entry.name, sub_entry.name });
+                try files.append(rel_path);
+            }
+        }
     }
 
     // Sort alphabetically (so numeric prefixes work)

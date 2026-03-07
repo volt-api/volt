@@ -41,6 +41,7 @@ pub const SSE = @import("sse.zig");
 // Tier 1+2 modules
 pub const CurlImport = @import("curl_import.zig");
 pub const OpenAPIImport = @import("openapi_import.zig");
+pub const YamlToJson = @import("yaml_to_json.zig");
 pub const DynamicVars = @import("dynamic_vars.zig");
 pub const DataDriver = @import("data_driver.zig");
 pub const JUnit = @import("junit.zig");

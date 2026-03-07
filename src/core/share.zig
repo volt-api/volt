@@ -258,7 +258,18 @@ fn serializeRequest(allocator: Allocator, request: *const VoltFile.VoltRequest) 
 
     // Body
     if (request.body) |body| {
-        try writer.print("body_type: {s}\n", .{request.body_type.toString()});
+        const effective_body_type = if (request.body_type == .none) blk: {
+            // Infer body type from content
+            const trimmed_body = mem.trimLeft(u8, body, " \t\r\n");
+            if (trimmed_body.len > 0 and (trimmed_body[0] == '{' or trimmed_body[0] == '[')) {
+                break :blk "json";
+            } else if (trimmed_body.len > 0 and trimmed_body[0] == '<') {
+                break :blk "xml";
+            } else {
+                break :blk "raw";
+            }
+        } else request.body_type.toString();
+        try writer.print("body_type: {s}\n", .{effective_body_type});
         try writer.writeAll("body: |\n");
         var body_lines = mem.splitSequence(u8, body, "\n");
         while (body_lines.next()) |bline| {

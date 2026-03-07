@@ -1893,6 +1893,64 @@ fn cmdServe(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try server.serve();
 }
 
+fn cmdExportOpenAPI(allocator: std.mem.Allocator, path: []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+
+    // Try as directory first
+    var dir_handle = std.fs.cwd().openDir(path, .{ .iterate = true }) catch {
+        // Not a directory — try as single file
+        const file = std.fs.cwd().openFile(path, .{}) catch {
+            try printError("Cannot open file or directory: {s}", .{path});
+            return;
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+        defer allocator.free(content);
+
+        var request = VoltFile.parse(allocator, content) catch {
+            try printError("Failed to parse .volt file: {s}", .{path});
+            return;
+        };
+        defer request.deinit();
+
+        const requests = [_]VoltFile.VoltRequest{request};
+        const output = try Exporter.exportOpenAPI(allocator, &requests, "Volt Collection");
+        defer allocator.free(output);
+        try stdout.writeAll(output);
+        return;
+    };
+    defer dir_handle.close();
+
+    // Directory mode — collect all .volt files
+    var volt_requests = std.ArrayList(VoltFile.VoltRequest).init(allocator);
+    defer {
+        for (volt_requests.items) |*r| r.deinit();
+        volt_requests.deinit();
+    }
+
+    var dir_iter = dir_handle.iterate();
+    while (try dir_iter.next()) |entry| {
+        if (entry.kind != .file or !mem.endsWith(u8, entry.name, ".volt")) continue;
+        if (mem.startsWith(u8, entry.name, "_")) continue;
+        const f = dir_handle.openFile(entry.name, .{}) catch continue;
+        defer f.close();
+        const fc = f.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+        defer allocator.free(fc);
+        const parsed = VoltFile.parse(allocator, fc) catch continue;
+        try volt_requests.append(parsed);
+    }
+
+    if (volt_requests.items.len == 0) {
+        try stdout.writeAll("No .volt files found in directory.\n");
+        return;
+    }
+
+    const output = try Exporter.exportOpenAPI(allocator, volt_requests.items, path);
+    defer allocator.free(output);
+    try stdout.writeAll(output);
+}
+
 fn cmdExport(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
         try printError("Usage: volt export <format> <file.volt>", .{});
@@ -1903,6 +1961,11 @@ fn cmdExport(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const format = args[0];
     const file_path = args[1];
+
+    // Handle openapi export specially — supports both files and directories
+    if (mem.eql(u8, format, "openapi")) {
+        return cmdExportOpenAPI(allocator, file_path);
+    }
 
     // Load .volt file
     const file = std.fs.cwd().openFile(file_path, .{}) catch {
@@ -1936,11 +1999,6 @@ fn cmdExport(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try stdout.writeAll(output);
     } else if (mem.eql(u8, format, "go")) {
         const output = try Exporter.exportGo(&request, allocator);
-        defer allocator.free(output);
-        try stdout.writeAll(output);
-    } else if (mem.eql(u8, format, "openapi")) {
-        const requests = [_]VoltFile.VoltRequest{request};
-        const output = try Exporter.exportOpenAPI(allocator, &requests, "Volt Collection");
         defer allocator.free(output);
         try stdout.writeAll(output);
     } else if (mem.eql(u8, format, "har")) {
@@ -2075,10 +2133,9 @@ fn cmdImport(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
         if (mem.eql(u8, args[i], "--output") and i + 1 < args.len) {
+            output_dir = args[i + 1];
             if (mem.eql(u8, format, "curl")) {
                 output_file_flag = args[i + 1];
-            } else {
-                output_dir = args[i + 1];
             }
             i += 1;
         }
@@ -2170,13 +2227,31 @@ fn cmdImport(allocator: std.mem.Allocator, args: []const []const u8) !void {
         defer allocator.free(volt_content);
 
         if (output_file_flag) |out_path| {
-            const out_f = std.fs.cwd().createFile(out_path, .{}) catch {
-                try printError("Cannot create file: {s}", .{out_path});
-                return;
-            };
-            defer out_f.close();
-            try out_f.writeAll(volt_content);
-            try stdout.print("\x1b[32m✓\x1b[0m Imported cURL to {s}\n", .{out_path});
+            // Check if output path is a directory
+            if (std.fs.cwd().openDir(out_path, .{})) |d| {
+                var dir_copy = d;
+                dir_copy.close();
+                const auto_path = std.fmt.allocPrint(allocator, "{s}/imported.volt", .{out_path}) catch {
+                    try printError("Memory allocation failed", .{});
+                    return;
+                };
+                defer allocator.free(auto_path);
+                const out_f = std.fs.cwd().createFile(auto_path, .{}) catch {
+                    try printError("Cannot create file: {s}", .{auto_path});
+                    return;
+                };
+                defer out_f.close();
+                try out_f.writeAll(volt_content);
+                try stdout.print("\x1b[32m✓\x1b[0m Imported cURL to {s}\n", .{auto_path});
+            } else |_| {
+                const out_f = std.fs.cwd().createFile(out_path, .{}) catch {
+                    try printError("Cannot create file: {s}", .{out_path});
+                    return;
+                };
+                defer out_f.close();
+                try out_f.writeAll(volt_content);
+                try stdout.print("\x1b[32m✓\x1b[0m Imported cURL to {s}\n", .{out_path});
+            }
         } else {
             try stdout.writeAll(volt_content);
         }
@@ -2351,10 +2426,46 @@ fn cmdEnv(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
 fn cmdLint(_: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = std.io.getStdOut().writer();
-    const target_dir = if (args.len > 0) args[0] else ".";
+    const target = if (args.len > 0) args[0] else ".";
 
-    var dir = std.fs.cwd().openDir(target_dir, .{ .iterate = true }) catch {
-        try printError("Cannot open directory: {s}", .{target_dir});
+    // Check if target is a single .volt file
+    if (mem.endsWith(u8, target, ".volt")) {
+        const file = std.fs.cwd().openFile(target, .{}) catch {
+            try printError("Cannot open file: {s}", .{target});
+            return;
+        };
+        defer file.close();
+
+        var buf: [1024 * 1024]u8 = undefined;
+        const n = file.readAll(&buf) catch {
+            try stdout.print("\x1b[31m✗\x1b[0m {s}: cannot read\n", .{target});
+            try stdout.print("\n1 files checked: \x1b[32m0 valid\x1b[0m, \x1b[31m1 invalid\x1b[0m\n", .{});
+            return;
+        };
+
+        var gpa_inner = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa_inner.deinit();
+
+        var request = VoltFile.parse(gpa_inner.allocator(), buf[0..n]) catch {
+            try stdout.print("\x1b[31m✗\x1b[0m {s}: parse error\n", .{target});
+            try stdout.print("\n1 files checked: \x1b[32m0 valid\x1b[0m, \x1b[31m1 invalid\x1b[0m\n", .{});
+            return;
+        };
+        defer request.deinit();
+
+        if (request.url.len == 0) {
+            try stdout.print("\x1b[33m⚠\x1b[0m {s}: missing url\n", .{target});
+            try stdout.print("\n1 files checked: \x1b[32m0 valid\x1b[0m, \x1b[31m1 invalid\x1b[0m\n", .{});
+            return;
+        }
+
+        try stdout.print("\x1b[32m✓\x1b[0m {s}\n", .{target});
+        try stdout.print("\n1 files checked: \x1b[32m1 valid\x1b[0m, \x1b[31m0 invalid\x1b[0m\n", .{});
+        return;
+    }
+
+    var dir = std.fs.cwd().openDir(target, .{ .iterate = true }) catch {
+        try printError("Cannot open directory: {s}", .{target});
         return;
     };
     defer dir.close();

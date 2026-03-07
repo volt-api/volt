@@ -2,7 +2,7 @@
 
 Honest assessment of every feature. Last updated: Feb 21, 2026.
 
-**72 core modules** | **49,000+ lines of Zig** | **653 unit tests** | **0 failures**
+**78 core modules** | **50,000+ lines of Zig** | **816 unit tests** | **0 failures**
 
 ---
 

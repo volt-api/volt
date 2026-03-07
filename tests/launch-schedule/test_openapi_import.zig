@@ -353,10 +353,10 @@ test "import empty OpenAPI returns no endpoints" {
     try testing.expectEqual(@as(usize, 0), endpoints.items.len);
 }
 
-test "import invalid JSON returns empty" {
-    const json_content = "not valid json at all";
+test "import non-openapi content returns empty" {
+    const content = "not valid json at all";
 
-    var endpoints = try OpenAPIImport.parseOpenAPI(testing.allocator, json_content);
+    var endpoints = try OpenAPIImport.parseOpenAPI(testing.allocator, content);
     defer {
         for (endpoints.items) |*ep| ep.deinit();
         endpoints.deinit();

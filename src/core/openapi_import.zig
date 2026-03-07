@@ -2,11 +2,12 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const VoltFile = @import("volt_file.zig");
+const YamlToJson = @import("yaml_to_json.zig");
 
-// ── OpenAPI 3.x / Swagger 2.0 JSON Import ───────────────────────────────
-// Parse OpenAPI JSON specs and generate .volt file content for each endpoint.
-// Supports JSON format only. Extracts paths, methods, parameters,
-// requestBody, responses, and server base URLs.
+// ── OpenAPI 3.x / Swagger 2.0 Import ────────────────────────────────────
+// Parse OpenAPI specs (JSON or YAML) and generate .volt file content.
+// Extracts paths, methods, parameters, requestBody, responses,
+// and server base URLs.
 
 pub const Header = struct {
     name: []const u8,
@@ -53,8 +54,17 @@ pub fn parseOpenAPI(allocator: Allocator, json_content: []const u8) !std.ArrayLi
         endpoints.deinit();
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_content, .{}) catch
-        return endpoints;
+    // Try JSON first, then YAML
+    var yaml_json_buf: ?[]const u8 = null;
+    defer if (yaml_json_buf) |buf| allocator.free(buf);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_content, .{}) catch blk: {
+        // JSON failed — try YAML-to-JSON conversion
+        yaml_json_buf = YamlToJson.convert(allocator, json_content) catch
+            return error.InvalidJsonFormat;
+        break :blk std.json.parseFromSlice(std.json.Value, allocator, yaml_json_buf.?, .{}) catch
+            return error.InvalidJsonFormat;
+    };
     defer parsed.deinit();
 
     const root = parsed.value;

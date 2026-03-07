@@ -30,7 +30,7 @@
   <img src="assets/volt-demo.svg" alt="Volt running a GET request with syntax-highlighted JSON response in 47ms" width="800">
 </p>
 
-Volt is a complete API development toolkit built from scratch in **Zig**. 72 modules, 49,000+ lines, 653 tests — zero external dependencies. Plain-text `.volt` files live in your git repo alongside your code. No account required. No cloud sync. No telemetry. No Electron. Just a single binary that does everything Postman does in 1/100th the size.
+Volt is a complete API development toolkit built from scratch in **Zig**. 78 modules, 50,000+ lines, 816 tests — zero external dependencies. Plain-text `.volt` files live in your git repo alongside your code. No account required. No cloud sync. No telemetry. No Electron. Just a single binary that does everything Postman does in 1/100th the size.
 
 > **[Getting Started](docs/getting-started.md)** &nbsp;&middot;&nbsp; **[Command Reference](docs/commands.md)** &nbsp;&middot;&nbsp; **[.volt File Format](docs/volt-file-format.md)**
 
@@ -331,7 +331,7 @@ tests:
 ```bash
 volt import postman collection.json     # Postman v2.0/v2.1
 volt import insomnia export.json        # Insomnia
-volt import openapi spec.yaml           # OpenAPI 3.x / Swagger
+volt import openapi spec.yaml           # OpenAPI 3.x / Swagger (JSON + YAML)
 volt import curl 'curl -X POST ...'     # cURL command
 volt import har recording.har           # HAR files
 ```
@@ -608,7 +608,7 @@ Volt is built entirely in [Zig](https://ziglang.org) — the same language behin
 - **No hidden allocations.** Every byte is accounted for. This is why Volt uses 5 MB while Postman uses 500 MB.
 
 ```
-72 modules  |  49,000+ lines of code  |  653 tests  |  0 dependencies
+78 modules  |  50,000+ lines of code  |  816 tests  |  0 dependencies
 ```
 
 ## Current Limitations
