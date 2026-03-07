@@ -16,6 +16,8 @@ const VoltApp = (() => {
         authType: 'none',
         auth: {},
         tests: '',
+        preScript: '',
+        postScript: '',
 
         // Response
         response: null,
@@ -32,6 +34,9 @@ const VoltApp = (() => {
         // History
         history: [],
 
+        // Workspace
+        activeWorkspace: '',
+
         // UI
         theme: localStorage.getItem('volt-theme') || 'dark',
         sidebarCollapsed: false,
@@ -47,10 +52,20 @@ const VoltApp = (() => {
 
         async request(endpoint, options = {}) {
             try {
+                const headers = options.headers || {};
+                if (!headers['Content-Type'] && options.body && typeof options.body === 'string') {
+                    try { JSON.parse(options.body); headers['Content-Type'] = 'application/json'; }
+                    catch { headers['Content-Type'] = 'text/plain'; }
+                }
                 const resp = await fetch(this.base + endpoint, {
-                    headers: { 'Content-Type': 'application/json' },
                     ...options,
+                    headers,
                 });
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    try { return JSON.parse(text); }
+                    catch { return { error: `HTTP ${resp.status}: ${text.slice(0, 200)}` }; }
+                }
                 return await resp.json();
             } catch (err) {
                 console.error('API Error:', err);
@@ -140,6 +155,61 @@ const VoltApp = (() => {
                 body: JSON.stringify(data),
             });
         },
+
+        // WebSocket simulation
+        async wsConnect(url) {
+            return this.request('/api/ws/connect', {
+                method: 'POST',
+                body: JSON.stringify({ url }),
+            });
+        },
+        async wsSend(id, message) {
+            return this.request('/api/ws/send', {
+                method: 'POST',
+                body: JSON.stringify({ id, message }),
+            });
+        },
+        async wsMessages() {
+            return this.request('/api/ws/messages');
+        },
+        async wsDisconnect(id) {
+            return this.request('/api/ws/disconnect', {
+                method: 'POST',
+                body: JSON.stringify({ id }),
+            });
+        },
+        async wsStatus() {
+            return this.request('/api/ws/status');
+        },
+
+        // SSE simulation
+        async sseConnect(url) {
+            return this.request('/api/sse/connect', {
+                method: 'POST',
+                body: JSON.stringify({ url }),
+            });
+        },
+        async sseEvents() {
+            return this.request('/api/sse/events');
+        },
+        async sseDisconnect() {
+            return this.request('/api/sse/disconnect', { method: 'POST' });
+        },
+        async sseStatus() {
+            return this.request('/api/sse/status');
+        },
+
+        // Collection runner
+        async collectionFiles(dir) {
+            const q = dir ? `?dir=${encodeURIComponent(dir)}` : '';
+            return this.request('/api/collection/files' + q);
+        },
+        async collectionRun(dir, env) {
+            return this.request('/api/collection/run', {
+                method: 'POST',
+                body: JSON.stringify({ dir, env: env || undefined }),
+            });
+        },
     };
 
     // ── DOM Helpers ─────────────────────────────────────────────────────
@@ -172,7 +242,27 @@ const VoltApp = (() => {
         updateMethodColor();
         addDefaultRows();
         updateAuthFields();
+        registerServiceWorker();
         setStatus('Ready');
+    }
+
+    // ── PWA Service Worker ──────────────────────────────────────────────
+    function registerServiceWorker() {
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').then(reg => {
+                console.log('SW registered:', reg.scope);
+            }).catch(err => {
+                console.log('SW registration failed:', err);
+            });
+        }
+
+        // PWA install prompt
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            // Could show a custom install button here
+        });
     }
 
     // ── Event Binding ───────────────────────────────────────────────────
@@ -248,6 +338,21 @@ const VoltApp = (() => {
         $('#btn-export').addEventListener('click', showExportModal);
         $('#btn-save-as-volt').addEventListener('click', saveAsVolt);
 
+        // Environment selector
+        $('#env-select').addEventListener('change', (e) => {
+            state.activeEnv = e.target.value;
+        });
+
+        // Workspace selector
+        const wsSelect = $('#workspace-select');
+        if (wsSelect) {
+            wsSelect.addEventListener('change', (e) => {
+                state.activeWorkspace = e.target.value;
+                loadCollections();
+                loadEnvironments();
+            });
+        }
+
         // New request
         $('#btn-new-request').addEventListener('click', newRequest);
 
@@ -272,6 +377,30 @@ const VoltApp = (() => {
         // Drag & drop import
         document.body.addEventListener('dragover', (e) => { e.preventDefault(); });
         document.body.addEventListener('drop', handleFileDrop);
+
+        // WebSocket panel
+        const wsConnBtn = $('#ws-connect-btn');
+        const wsDisconnBtn = $('#ws-disconnect-btn');
+        const wsSendBtn = $('#ws-send-btn');
+        const wsMsgInput = $('#ws-message-input');
+        if (wsConnBtn) wsConnBtn.addEventListener('click', wsConnect);
+        if (wsDisconnBtn) wsDisconnBtn.addEventListener('click', wsDisconnect);
+        if (wsSendBtn) wsSendBtn.addEventListener('click', wsSendMessage);
+        if (wsMsgInput) {
+            wsMsgInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') wsSendMessage();
+            });
+        }
+
+        // SSE panel
+        const sseConnBtn = $('#sse-connect-btn');
+        const sseDisconnBtn = $('#sse-disconnect-btn');
+        if (sseConnBtn) sseConnBtn.addEventListener('click', sseConnect);
+        if (sseDisconnBtn) sseDisconnBtn.addEventListener('click', sseDisconnect);
+
+        // Collection runner
+        const runBtn = $('#runner-run-btn');
+        if (runBtn) runBtn.addEventListener('click', runCollection);
     }
 
     // ── Keyboard Shortcuts ──────────────────────────────────────────────
@@ -309,6 +438,7 @@ const VoltApp = (() => {
 
     // ── Send Request ────────────────────────────────────────────────────
     async function sendRequest() {
+        if (state.loading) return;
         const url = $('#url-input').value.trim();
         if (!url) {
             setStatus('Please enter a URL');
@@ -316,6 +446,7 @@ const VoltApp = (() => {
         }
 
         state.loading = true;
+        $('#btn-send').disabled = true;
         $('#btn-send').classList.add('loading');
         $('#btn-send').textContent = 'Sending...';
         setStatus('Sending request...');
@@ -370,7 +501,61 @@ const VoltApp = (() => {
                     data.headers[keyInput.value] = valInput.value;
                 }
             }
+        } else if (state.authType === 'digest') {
+            const userInput = $('#auth-digest-user');
+            const passInput = $('#auth-digest-pass');
+            if (userInput && passInput) {
+                data.auth = { type: 'digest', username: userInput.value, password: passInput.value };
+            }
+        } else if (state.authType === 'aws') {
+            data.auth = {
+                type: 'aws',
+                access_key: $('#auth-aws-access-key')?.value || '',
+                secret_key: $('#auth-aws-secret-key')?.value || '',
+                region: $('#auth-aws-region')?.value || 'us-east-1',
+                service: $('#auth-aws-service')?.value || 'execute-api',
+                session_token: $('#auth-aws-session-token')?.value || undefined,
+            };
+        } else if (state.authType === 'hawk') {
+            data.auth = {
+                type: 'hawk',
+                hawk_id: $('#auth-hawk-id')?.value || '',
+                hawk_key: $('#auth-hawk-key')?.value || '',
+                hawk_algorithm: $('#auth-hawk-algorithm')?.value || 'sha256',
+                hawk_ext: $('#auth-hawk-ext')?.value || undefined,
+            };
+        } else if (state.authType === 'oauth_cc') {
+            data.auth = {
+                type: 'oauth_cc',
+                client_id: $('#auth-oauth-client-id')?.value || '',
+                client_secret: $('#auth-oauth-client-secret')?.value || '',
+                token_url: $('#auth-oauth-token-url')?.value || '',
+                scope: $('#auth-oauth-scope')?.value || undefined,
+            };
+        } else if (state.authType === 'oauth_password') {
+            data.auth = {
+                type: 'oauth_password',
+                client_id: $('#auth-oauth-client-id')?.value || '',
+                client_secret: $('#auth-oauth-client-secret')?.value || '',
+                token_url: $('#auth-oauth-token-url')?.value || '',
+                username: $('#auth-oauth-username')?.value || '',
+                password: $('#auth-oauth-password')?.value || '',
+                scope: $('#auth-oauth-scope')?.value || undefined,
+            };
+        } else if (state.authType === 'oauth_implicit') {
+            data.auth = {
+                type: 'oauth_implicit',
+                client_id: $('#auth-oauth-client-id')?.value || '',
+                auth_url: $('#auth-oauth-auth-url')?.value || '',
+                scope: $('#auth-oauth-scope')?.value || undefined,
+            };
         }
+
+        // Pre/post scripts
+        const preScript = $('#pre-script-editor')?.value?.trim();
+        const postScript = $('#post-script-editor')?.value?.trim();
+        if (preScript) data.pre_script = preScript;
+        if (postScript) data.post_script = postScript;
 
         // Append query params
         const paramRows = $$('#params-table tbody tr');
@@ -391,6 +576,7 @@ const VoltApp = (() => {
         const result = await api.executeRequest(data);
 
         state.loading = false;
+        $('#btn-send').disabled = false;
         $('#btn-send').classList.remove('loading');
         $('#btn-send').textContent = 'Send';
 
@@ -450,8 +636,12 @@ const VoltApp = (() => {
 
         if (state.responseView === 'preview' && typeof body === 'string' &&
             (body.trim().startsWith('<') || body.trim().startsWith('<!DOCTYPE'))) {
-            bodyEl.innerHTML = '<iframe style="width:100%;height:100%;border:none;" srcdoc="' +
-                body.replace(/"/g, '&quot;') + '"></iframe>';
+            const iframe = document.createElement('iframe');
+            iframe.style.cssText = 'width:100%;height:100%;border:none;';
+            iframe.sandbox = 'allow-same-origin';
+            iframe.srcdoc = body;
+            bodyEl.innerHTML = '';
+            bodyEl.appendChild(iframe);
             return;
         }
 
@@ -639,7 +829,7 @@ const VoltApp = (() => {
         const lower = filename.toLowerCase();
         if (lower.includes('post') || lower.includes('create')) return 'POST';
         if (lower.includes('put') || lower.includes('update')) return 'PUT';
-        if (lower.includes('delete') || lower.includes('remove')) return 'DEL';
+        if (lower.includes('delete') || lower.includes('remove')) return 'DELETE';
         if (lower.includes('patch')) return 'PATCH';
         return 'GET';
     }
@@ -800,8 +990,24 @@ const VoltApp = (() => {
         }
         if (data.body) {
             $('#body-editor').value = data.body;
-            document.querySelector('input[name="body-type"][value="json"]').checked = true;
+            const bodyType = data.body_type || 'json';
+            const radio = document.querySelector(`input[name="body-type"][value="${bodyType}"]`);
+            if (radio) radio.checked = true;
+            else document.querySelector('input[name="body-type"][value="json"]').checked = true;
             switchReqTab('body');
+        }
+        if (data.pre_script) {
+            $('#pre-script-editor').value = data.pre_script;
+            state.preScript = data.pre_script;
+        }
+        if (data.post_script) {
+            $('#post-script-editor').value = data.post_script;
+            state.postScript = data.post_script;
+        }
+        if (data.auth && data.auth.type && data.auth.type !== 'none') {
+            $('#auth-type').value = data.auth.type;
+            state.authType = data.auth.type;
+            updateAuthFields();
         }
     }
 
@@ -847,19 +1053,45 @@ const VoltApp = (() => {
     function buildVoltContent() {
         const method = state.method;
         const url = $('#url-input').value;
-        let content = `${method} ${url}\n`;
+        let content = `method: ${method}\nurl: ${url}\n`;
 
+        // Headers
         const headerRows = $$('#headers-table tbody tr');
+        let hasHeaders = false;
         headerRows.forEach(row => {
             const inputs = row.querySelectorAll('input');
             if (inputs.length >= 2 && inputs[0].value) {
-                content += `${inputs[0].value}: ${inputs[1].value}\n`;
+                if (!hasHeaders) { content += 'headers:\n'; hasHeaders = true; }
+                content += `  - ${inputs[0].value}: ${inputs[1].value}\n`;
             }
         });
 
+        // Body
         const bodyType = document.querySelector('input[name="body-type"]:checked').value;
         if (bodyType !== 'none' && $('#body-editor').value) {
-            content += '\n' + $('#body-editor').value;
+            content += `body:\n  type: ${bodyType}\n  content: |\n`;
+            $('#body-editor').value.split('\n').forEach(line => {
+                content += `    ${line}\n`;
+            });
+        }
+
+        // Auth
+        if (state.authType !== 'none') {
+            content += `auth:\n  type: ${state.authType}\n`;
+        }
+
+        // Pre-script
+        const preScript = $('#pre-script-editor')?.value?.trim();
+        if (preScript) {
+            content += 'pre_script: |\n';
+            preScript.split('\n').forEach(line => { content += `  ${line}\n`; });
+        }
+
+        // Post-script
+        const postScript = $('#post-script-editor')?.value?.trim();
+        if (postScript) {
+            content += 'post_script: |\n';
+            postScript.split('\n').forEach(line => { content += `  ${line}\n`; });
         }
 
         return content;
@@ -913,9 +1145,36 @@ const VoltApp = (() => {
                 try {
                     const json = JSON.parse(content);
                     if (json.info && json.item) {
-                        // Postman collection format
-                        setStatus('Imported Postman collection: ' + (json.info.name || file.name));
-                        // Refresh collections
+                        // Postman collection format — extract first request
+                        const firstItem = (function findFirst(items) {
+                            for (const it of items) {
+                                if (it.request) return it;
+                                if (it.item) { const f = findFirst(it.item); if (f) return f; }
+                            }
+                            return null;
+                        })(json.item);
+
+                        if (firstItem && firstItem.request) {
+                            const req = firstItem.request;
+                            const parsed = {
+                                method: typeof req.method === 'string' ? req.method : 'GET',
+                                url: typeof req.url === 'string' ? req.url : (req.url?.raw || ''),
+                                headers: {},
+                            };
+                            if (Array.isArray(req.header)) {
+                                req.header.forEach(h => {
+                                    if (h.key && h.value) parsed.headers[h.key] = h.value;
+                                });
+                            }
+                            if (req.body && req.body.raw) {
+                                parsed.body = req.body.raw;
+                                parsed.body_type = req.body.mode === 'raw' ? 'json' : (req.body.mode || 'json');
+                            }
+                            fillRequestFromParsed(parsed);
+                            setStatus('Imported from Postman: ' + (firstItem.name || json.info.name || file.name));
+                        } else {
+                            setStatus('Postman collection has no requests: ' + (json.info.name || file.name));
+                        }
                         loadCollections();
                     }
                 } catch {
@@ -953,8 +1212,12 @@ const VoltApp = (() => {
         $$('.sidebar-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
 
         if (tab === 'history-tab') {
+            hideProtocolPanels();
             renderHistory();
+        } else if (tab === 'protocols-tab') {
+            renderProtocolsSidebar();
         } else {
+            hideProtocolPanels();
             renderCollections();
         }
     }
@@ -1023,7 +1286,7 @@ const VoltApp = (() => {
                     <label>Username</label>
                     <input type="text" id="auth-basic-user" placeholder="Username">
                     <label>Password</label>
-                    <input type="text" id="auth-basic-pass" placeholder="Password">
+                    <input type="password" id="auth-basic-pass" placeholder="Password">
                 `;
                 break;
             case 'apikey':
@@ -1033,10 +1296,99 @@ const VoltApp = (() => {
                     <label>Value</label>
                     <input type="text" id="auth-apikey-value" placeholder="your-api-key">
                     <label>Add to</label>
-                    <select id="auth-apikey-location" style="width:100%;padding:4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+                    <select id="auth-apikey-location">
                         <option value="header">Header</option>
                         <option value="query">Query Param</option>
                     </select>
+                `;
+                break;
+            case 'digest':
+                container.innerHTML = `
+                    <label>Username</label>
+                    <input type="text" id="auth-digest-user" placeholder="Username">
+                    <label>Password</label>
+                    <input type="password" id="auth-digest-pass" placeholder="Password">
+                `;
+                break;
+            case 'aws':
+                container.innerHTML = `
+                    <div class="auth-field-group">
+                        <div class="auth-field-group-title">AWS Signature V4</div>
+                        <label>Access Key</label>
+                        <input type="text" id="auth-aws-access-key" placeholder="AKIAIOSFODNN7EXAMPLE">
+                        <label>Secret Key</label>
+                        <input type="password" id="auth-aws-secret-key" placeholder="wJalrXUtnFEMI/K7MDENG...">
+                        <label>Region</label>
+                        <input type="text" id="auth-aws-region" placeholder="us-east-1" value="us-east-1">
+                        <label>Service</label>
+                        <input type="text" id="auth-aws-service" placeholder="execute-api" value="execute-api">
+                        <label>Session Token (optional)</label>
+                        <input type="text" id="auth-aws-session-token" placeholder="Temporary session token">
+                    </div>
+                `;
+                break;
+            case 'hawk':
+                container.innerHTML = `
+                    <div class="auth-field-group">
+                        <div class="auth-field-group-title">Hawk Authentication</div>
+                        <label>Hawk ID</label>
+                        <input type="text" id="auth-hawk-id" placeholder="dh37fgj492je">
+                        <label>Hawk Key</label>
+                        <input type="password" id="auth-hawk-key" placeholder="werxhqb98rpaxn39848xrunpaw...">
+                        <label>Algorithm</label>
+                        <select id="auth-hawk-algorithm">
+                            <option value="sha256">SHA-256</option>
+                        </select>
+                        <label>Ext (optional)</label>
+                        <input type="text" id="auth-hawk-ext" placeholder="Application-specific data">
+                    </div>
+                `;
+                break;
+            case 'oauth_cc':
+                container.innerHTML = `
+                    <div class="auth-field-group">
+                        <div class="auth-field-group-title">OAuth 2.0 — Client Credentials</div>
+                        <label>Token URL</label>
+                        <input type="text" id="auth-oauth-token-url" placeholder="https://auth.example.com/token">
+                        <label>Client ID</label>
+                        <input type="text" id="auth-oauth-client-id" placeholder="your-client-id">
+                        <label>Client Secret</label>
+                        <input type="password" id="auth-oauth-client-secret" placeholder="your-client-secret">
+                        <label>Scope (optional)</label>
+                        <input type="text" id="auth-oauth-scope" placeholder="read write">
+                    </div>
+                `;
+                break;
+            case 'oauth_password':
+                container.innerHTML = `
+                    <div class="auth-field-group">
+                        <div class="auth-field-group-title">OAuth 2.0 — Password Grant</div>
+                        <label>Token URL</label>
+                        <input type="text" id="auth-oauth-token-url" placeholder="https://auth.example.com/token">
+                        <label>Client ID</label>
+                        <input type="text" id="auth-oauth-client-id" placeholder="your-client-id">
+                        <label>Client Secret (optional)</label>
+                        <input type="password" id="auth-oauth-client-secret" placeholder="your-client-secret">
+                        <label>Username</label>
+                        <input type="text" id="auth-oauth-username" placeholder="user@example.com">
+                        <label>Password</label>
+                        <input type="password" id="auth-oauth-password" placeholder="password">
+                        <label>Scope (optional)</label>
+                        <input type="text" id="auth-oauth-scope" placeholder="openid profile">
+                    </div>
+                `;
+                break;
+            case 'oauth_implicit':
+                container.innerHTML = `
+                    <div class="auth-field-group">
+                        <div class="auth-field-group-title">OAuth 2.0 — Implicit</div>
+                        <label>Authorization URL</label>
+                        <input type="text" id="auth-oauth-auth-url" placeholder="https://auth.example.com/authorize">
+                        <label>Client ID</label>
+                        <input type="text" id="auth-oauth-client-id" placeholder="your-client-id">
+                        <label>Scope (optional)</label>
+                        <input type="text" id="auth-oauth-scope" placeholder="openid profile">
+                    </div>
                 `;
                 break;
         }
@@ -1119,6 +1471,10 @@ const VoltApp = (() => {
         addDefaultRows();
         $('#body-editor').value = '';
         $('#tests-editor').value = '';
+        $('#pre-script-editor').value = '';
+        $('#post-script-editor').value = '';
+        state.preScript = '';
+        state.postScript = '';
         document.querySelector('input[name="body-type"][value="none"]').checked = true;
         $('#auth-type').value = 'none';
         state.authType = 'none';
@@ -1167,6 +1523,356 @@ const VoltApp = (() => {
     function escapeHtml(str) {
         return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // ── Protocols Sidebar ─────────────────────────────────────────────────
+    function renderProtocolsSidebar() {
+        const container = $('#collection-tree');
+        container.innerHTML = '';
+
+        const items = [
+            { label: 'WebSocket', icon: 'WS', panel: 'ws-panel' },
+            { label: 'Server-Sent Events', icon: 'SSE', panel: 'sse-panel' },
+            { label: 'Collection Runner', icon: 'RUN', panel: 'runner-panel' },
+        ];
+
+        items.forEach(item => {
+            const div = el('div', {
+                class: 'tree-item',
+                onclick: () => showProtocolPanel(item.panel),
+            }, [
+                el('span', {
+                    class: 'method-badge badge-get',
+                    text: item.icon,
+                    style: 'font-size:0.6rem;min-width:28px;',
+                }),
+                el('span', { text: item.label }),
+            ]);
+            container.appendChild(div);
+        });
+    }
+
+    function showProtocolPanel(panelId) {
+        // Hide all protocol panels
+        ['ws-panel', 'sse-panel', 'runner-panel'].forEach(id => {
+            const p = $('#' + id);
+            if (p) p.style.display = id === panelId ? 'flex' : 'none';
+        });
+
+        // Hide request builder and response viewer when a protocol panel is shown
+        const builder = $('.request-builder');
+        const viewer = $('.response-viewer');
+        if (builder) builder.style.display = panelId ? 'none' : '';
+        if (viewer) viewer.style.display = panelId ? 'none' : '';
+
+        // Populate runner env dropdown
+        if (panelId === 'runner-panel') {
+            const envSelect = $('#runner-env');
+            if (envSelect) {
+                envSelect.innerHTML = '<option value="">No Environment</option>';
+                state.environments.forEach(env => {
+                    const name = typeof env === 'string' ? env : env.name;
+                    envSelect.appendChild(el('option', { value: name, text: name }));
+                });
+            }
+        }
+    }
+
+    function hideProtocolPanels() {
+        ['ws-panel', 'sse-panel', 'runner-panel'].forEach(id => {
+            const p = $('#' + id);
+            if (p) p.style.display = 'none';
+        });
+        const builder = $('.request-builder');
+        const viewer = $('.response-viewer');
+        if (builder) builder.style.display = '';
+        if (viewer) viewer.style.display = '';
+    }
+
+    // ── WebSocket Panel ────────────────────────────────────────────────────
+    let wsPollingInterval = null;
+    let wsConnectionId = null;
+
+    async function wsConnect() {
+        const url = $('#ws-url').value.trim();
+        if (!url) {
+            setStatus('Please enter a WebSocket URL');
+            return;
+        }
+
+        setStatus('Connecting to WebSocket...');
+        const result = await api.wsConnect(url);
+
+        if (result.error) {
+            setStatus('WS Error: ' + result.error);
+            return;
+        }
+
+        wsConnectionId = result.id;
+        wsUpdateStatus(true);
+        setStatus('WebSocket connected: ' + url);
+
+        // Start polling for messages
+        if (wsPollingInterval) clearInterval(wsPollingInterval);
+        wsPollingInterval = setInterval(wsPollMessages, 2000);
+        wsPollMessages();
+    }
+
+    async function wsSendMessage() {
+        const input = $('#ws-message-input');
+        const msg = input.value.trim();
+        if (!msg || !wsConnectionId) return;
+
+        const result = await api.wsSend(wsConnectionId, msg);
+        if (result.error) {
+            setStatus('WS Send Error: ' + result.error);
+            return;
+        }
+
+        input.value = '';
+        wsPollMessages();
+    }
+
+    async function wsPollMessages() {
+        const result = await api.wsMessages();
+        if (result.messages) {
+            wsRenderMessages(result.messages);
+        }
+    }
+
+    async function wsDisconnect() {
+        if (wsPollingInterval) {
+            clearInterval(wsPollingInterval);
+            wsPollingInterval = null;
+        }
+
+        await api.wsDisconnect(wsConnectionId);
+        wsConnectionId = null;
+        wsUpdateStatus(false);
+        wsPollMessages();
+        setStatus('WebSocket disconnected');
+    }
+
+    function wsRenderMessages(messages) {
+        const container = $('#ws-messages');
+        container.innerHTML = '';
+
+        if (messages.length === 0) {
+            container.innerHTML = '<div class="ws-empty">No messages yet</div>';
+            return;
+        }
+
+        messages.forEach(msg => {
+            const div = el('div', { class: 'ws-message ws-' + msg.direction }, [
+                el('span', { class: 'ws-message-direction', text: msg.direction === 'sent' ? 'YOU' : 'SRV' }),
+                el('span', { class: 'ws-message-data', text: msg.data }),
+                el('span', { class: 'ws-message-time', text: new Date(msg.timestamp * 1000).toLocaleTimeString() }),
+            ]);
+            container.appendChild(div);
+        });
+
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function wsUpdateStatus(connected) {
+        const badge = $('#ws-status');
+        const connBtn = $('#ws-connect-btn');
+        const disconnBtn = $('#ws-disconnect-btn');
+        const sendBtn = $('#ws-send-btn');
+
+        if (badge) {
+            badge.textContent = connected ? 'Connected' : 'Disconnected';
+            badge.className = 'ws-status-badge ' + (connected ? 'connected' : 'disconnected');
+        }
+        if (connBtn) connBtn.disabled = connected;
+        if (disconnBtn) disconnBtn.disabled = !connected;
+        if (sendBtn) sendBtn.disabled = !connected;
+    }
+
+    // ── SSE Panel ──────────────────────────────────────────────────────────
+    let ssePollingInterval = null;
+    let sseConnectionId = null;
+
+    async function sseConnect() {
+        const url = $('#sse-url').value.trim();
+        if (!url) {
+            setStatus('Please enter an SSE URL');
+            return;
+        }
+
+        setStatus('Connecting to SSE...');
+        const result = await api.sseConnect(url);
+
+        if (result.error) {
+            setStatus('SSE Error: ' + result.error);
+            return;
+        }
+
+        sseConnectionId = result.id;
+        sseUpdateStatus(true);
+        setStatus('SSE connected: ' + url);
+
+        if (ssePollingInterval) clearInterval(ssePollingInterval);
+        ssePollingInterval = setInterval(ssePollEvents, 2000);
+        ssePollEvents();
+    }
+
+    async function ssePollEvents() {
+        const result = await api.sseEvents();
+        if (result.events) {
+            sseRenderEvents(result.events);
+        }
+    }
+
+    async function sseDisconnect() {
+        if (ssePollingInterval) {
+            clearInterval(ssePollingInterval);
+            ssePollingInterval = null;
+        }
+
+        await api.sseDisconnect();
+        sseConnectionId = null;
+        sseUpdateStatus(false);
+        ssePollEvents();
+        setStatus('SSE disconnected');
+    }
+
+    function sseRenderEvents(events) {
+        const container = $('#sse-events');
+        container.innerHTML = '';
+
+        if (events.length === 0) {
+            container.innerHTML = '<div class="sse-empty">No events yet</div>';
+            return;
+        }
+
+        events.forEach(evt => {
+            const div = el('div', { class: 'sse-event' }, [
+                el('div', { class: 'sse-event-header' }, [
+                    el('span', { class: 'sse-event-type', text: evt.type }),
+                    el('span', { class: 'sse-event-id', text: 'id: ' + evt.id }),
+                    el('span', { class: 'sse-event-time', text: new Date(evt.timestamp * 1000).toLocaleTimeString() }),
+                ]),
+                el('pre', { class: 'sse-event-data', text: evt.data }),
+            ]);
+            container.appendChild(div);
+        });
+
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function sseUpdateStatus(connected) {
+        const badge = $('#sse-status');
+        const connBtn = $('#sse-connect-btn');
+        const disconnBtn = $('#sse-disconnect-btn');
+
+        if (badge) {
+            badge.textContent = connected ? 'Connected' : 'Disconnected';
+            badge.className = 'sse-status-badge ' + (connected ? 'connected' : 'disconnected');
+        }
+        if (connBtn) connBtn.disabled = connected;
+        if (disconnBtn) disconnBtn.disabled = !connected;
+    }
+
+    // ── Collection Runner ──────────────────────────────────────────────────
+
+    async function runCollection() {
+        const dir = $('#runner-dir').value.trim() || '.';
+        const env = $('#runner-env').value;
+        const runBtn = $('#runner-run-btn');
+        const statusEl = $('#runner-status');
+        const progressContainer = $('#runner-progress-container');
+        const resultsContainer = $('#runner-results');
+
+        runBtn.disabled = true;
+        runBtn.textContent = 'Running...';
+        if (statusEl) statusEl.textContent = 'Running...';
+        if (progressContainer) progressContainer.style.display = 'flex';
+        if (resultsContainer) resultsContainer.innerHTML = '';
+        updateRunProgress(0, 1);
+
+        setStatus('Running collection in ' + dir + '...');
+
+        const result = await api.collectionRun(dir, env);
+
+        runBtn.disabled = false;
+        runBtn.textContent = 'Run Collection';
+
+        if (result.error) {
+            setStatus('Runner Error: ' + result.error);
+            if (statusEl) statusEl.textContent = 'Error';
+            if (progressContainer) progressContainer.style.display = 'none';
+            return;
+        }
+
+        const total = result.total || 0;
+        const passed = result.passed || 0;
+        const failed = result.failed || 0;
+
+        updateRunProgress(total, total);
+        if (statusEl) statusEl.textContent = `Done: ${passed} passed, ${failed} failed`;
+        setStatus(`Collection run complete: ${passed}/${total} passed`);
+
+        renderCollectionResults(result.results || []);
+    }
+
+    function renderCollectionResults(results) {
+        const container = $('#runner-results');
+        container.innerHTML = '';
+
+        if (results.length === 0) {
+            container.innerHTML = '<div style="padding:16px;color:var(--text-muted);text-align:center;">No .volt files found in directory</div>';
+            return;
+        }
+
+        const table = el('table', { class: 'runner-results-table' }, [
+            el('thead', {}, [
+                el('tr', {}, [
+                    el('th', { text: 'File' }),
+                    el('th', { text: 'Method' }),
+                    el('th', { text: 'Status' }),
+                    el('th', { text: 'Time' }),
+                    el('th', { text: 'Result' }),
+                ]),
+            ]),
+        ]);
+
+        const tbody = el('tbody');
+        results.forEach(r => {
+            const statusCode = r.status_code || 0;
+            const isPass = r.status === 'pass';
+            const isError = r.status === 'error';
+
+            const tr = el('tr', { class: isPass ? 'runner-pass' : (isError ? 'runner-error' : 'runner-fail') }, [
+                el('td', { text: r.file || '' }),
+                el('td', {}, [
+                    el('span', {
+                        class: 'method-badge badge-' + (r.method || 'get').toLowerCase(),
+                        text: r.method || '?',
+                    }),
+                ]),
+                el('td', { text: isError ? (r.error || 'Error') : String(statusCode) }),
+                el('td', { text: r.time_ms ? r.time_ms + 'ms' : '-' }),
+                el('td', {}, [
+                    el('span', {
+                        class: 'runner-result-badge ' + (isPass ? 'pass' : 'fail'),
+                        text: isPass ? 'PASS' : (isError ? 'ERR' : 'FAIL'),
+                    }),
+                ]),
+            ]);
+            tbody.appendChild(tr);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+    }
+
+    function updateRunProgress(current, total) {
+        const fill = $('#runner-progress-fill');
+        const text = $('#runner-progress-text');
+        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+        if (fill) fill.style.width = pct + '%';
+        if (text) text.textContent = current + '/' + total;
     }
 
     // ── Boot ────────────────────────────────────────────────────────────

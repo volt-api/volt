@@ -625,6 +625,250 @@ pub fn formatResponseContent(allocator: Allocator, body: []const u8, content_typ
     }
 }
 
+// ── JSONPath Filtering ──────────────────────────────────────────────────
+//
+// Supports basic JSONPath queries for filtering response JSON content.
+// Syntax: $.key.nested.field, $.array[0], $.data[*].name
+
+pub const JsonPathError = error{
+    OutOfMemory,
+    InvalidPath,
+    KeyNotFound,
+    IndexOutOfBounds,
+};
+
+/// Apply a JSONPath-like query to JSON content and return the matching value.
+/// Supports: $.key, $.key.nested, $.array[0], $.key[*] (all array elements)
+pub fn filterJsonPath(allocator: Allocator, json: []const u8, path: []const u8) JsonPathError![]const u8 {
+    if (path.len == 0 or json.len == 0) return allocator.dupe(u8, json);
+
+    // Strip leading "$." if present
+    var query = path;
+    if (mem.startsWith(u8, query, "$.")) {
+        query = query[2..];
+    } else if (query[0] == '$') {
+        query = query[1..];
+    }
+
+    // Navigate the JSON using the path segments
+    var current = json;
+    var remaining_query = query;
+
+    while (remaining_query.len > 0) {
+        // Get the next path segment
+        var segment: []const u8 = undefined;
+        var array_index: ?usize = null;
+        var select_all = false;
+
+        // Check for array indexing: key[0] or key[*]
+        if (mem.indexOf(u8, remaining_query, "[")) |bracket_pos| {
+            const dot_pos = mem.indexOf(u8, remaining_query, ".");
+            if (dot_pos == null or bracket_pos < dot_pos.?) {
+                segment = remaining_query[0..bracket_pos];
+                const bracket_end = mem.indexOf(u8, remaining_query, "]") orelse return error.InvalidPath;
+                const index_str = remaining_query[bracket_pos + 1 .. bracket_end];
+
+                if (mem.eql(u8, index_str, "*")) {
+                    select_all = true;
+                } else {
+                    array_index = std.fmt.parseInt(usize, index_str, 10) catch return error.InvalidPath;
+                }
+
+                if (bracket_end + 1 < remaining_query.len and remaining_query[bracket_end + 1] == '.') {
+                    remaining_query = remaining_query[bracket_end + 2 ..];
+                } else {
+                    remaining_query = remaining_query[bracket_end + 1 ..];
+                }
+            } else {
+                segment = remaining_query[0..dot_pos.?];
+                remaining_query = remaining_query[dot_pos.? + 1 ..];
+            }
+        } else if (mem.indexOf(u8, remaining_query, ".")) |dot_pos| {
+            segment = remaining_query[0..dot_pos];
+            remaining_query = remaining_query[dot_pos + 1 ..];
+        } else {
+            segment = remaining_query;
+            remaining_query = "";
+        }
+
+        // Navigate into the JSON to find this key
+        if (segment.len > 0) {
+            current = jsonNavigateToKey(current, segment) orelse return error.KeyNotFound;
+        }
+
+        // Handle array indexing
+        if (array_index) |idx| {
+            current = jsonNavigateToIndex(current, idx) orelse return error.IndexOutOfBounds;
+        } else if (select_all) {
+            // Return all array elements as a JSON array
+            return jsonSelectAllElements(allocator, current, remaining_query);
+        }
+    }
+
+    // Extract and return the value at current position
+    return extractJsonValue(allocator, current);
+}
+
+/// Navigate JSON to find the value for a given key.
+fn jsonNavigateToKey(json: []const u8, key: []const u8) ?[]const u8 {
+    var search_buf: [256]u8 = undefined;
+    const search_key = std.fmt.bufPrint(&search_buf, "\"{s}\"", .{key}) catch return null;
+
+    const key_pos = mem.indexOf(u8, json, search_key) orelse return null;
+    const after_key = json[key_pos + search_key.len ..];
+
+    // Skip ": " or ":"
+    var pos: usize = 0;
+    while (pos < after_key.len and (after_key[pos] == ':' or after_key[pos] == ' ' or after_key[pos] == '\t' or after_key[pos] == '\n' or after_key[pos] == '\r')) {
+        pos += 1;
+    }
+    if (pos >= after_key.len) return null;
+
+    return after_key[pos..];
+}
+
+/// Navigate to a specific array index in JSON.
+fn jsonNavigateToIndex(json: []const u8, index: usize) ?[]const u8 {
+    const trimmed = mem.trimLeft(u8, json, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] != '[') return null;
+
+    var pos: usize = 1; // skip '['
+    var current_index: usize = 0;
+    var depth: usize = 0;
+    var in_string = false;
+    var at_element_start = true;
+
+    while (pos < trimmed.len) {
+        if (at_element_start and current_index == index and depth == 0 and !in_string) {
+            const value_start = mem.trimLeft(u8, trimmed[pos..], " \t\r\n");
+            if (value_start.len > 0 and value_start[0] != ',' and value_start[0] != ']') {
+                return value_start;
+            }
+        }
+
+        const c = trimmed[pos];
+
+        if (at_element_start and (c == ' ' or c == '\t' or c == '\n' or c == '\r')) {
+            pos += 1;
+            continue;
+        }
+
+        at_element_start = false;
+
+        if (c == '"' and (pos == 0 or trimmed[pos - 1] != '\\')) {
+            in_string = !in_string;
+            pos += 1;
+            continue;
+        }
+        if (in_string) {
+            pos += 1;
+            continue;
+        }
+
+        if (c == '{' or c == '[') depth += 1;
+        if (c == '}' or c == ']') {
+            if (depth == 0) break;
+            depth -= 1;
+        }
+
+        if (c == ',' and depth == 0) {
+            current_index += 1;
+            at_element_start = true;
+            pos += 1;
+            continue;
+        }
+
+        pos += 1;
+    }
+
+    return null;
+}
+
+/// Select all elements from a JSON array, optionally navigating deeper.
+fn jsonSelectAllElements(allocator: Allocator, json: []const u8, remaining_path: []const u8) JsonPathError![]const u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    errdefer result.deinit();
+
+    try result.append('[');
+
+    const trimmed = mem.trimLeft(u8, json, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] != '[') {
+        try result.append(']');
+        return result.toOwnedSlice();
+    }
+
+    var idx: usize = 0;
+    var first = true;
+
+    while (jsonNavigateToIndex(trimmed, idx)) |element| {
+        const value = extractJsonValue(allocator, element) catch break;
+        defer allocator.free(value);
+
+        if (remaining_path.len > 0) {
+            const sub_result = filterJsonPath(allocator, value, remaining_path) catch break;
+            defer allocator.free(sub_result);
+            if (!first) try result.append(',');
+            try result.appendSlice(sub_result);
+        } else {
+            if (!first) try result.append(',');
+            try result.appendSlice(value);
+        }
+        first = false;
+        idx += 1;
+    }
+
+    try result.append(']');
+    return result.toOwnedSlice();
+}
+
+/// Extract a single JSON value starting at the current position.
+fn extractJsonValue(allocator: Allocator, json: []const u8) JsonPathError![]const u8 {
+    const trimmed = mem.trimLeft(u8, json, " \t\r\n");
+    if (trimmed.len == 0) return allocator.dupe(u8, "");
+
+    if (trimmed[0] == '"') {
+        // String value — find closing quote
+        var i: usize = 1;
+        while (i < trimmed.len) : (i += 1) {
+            if (trimmed[i] == '\\') {
+                i += 1;
+                continue;
+            }
+            if (trimmed[i] == '"') {
+                return allocator.dupe(u8, trimmed[0 .. i + 1]);
+            }
+        }
+        return allocator.dupe(u8, trimmed);
+    } else if (trimmed[0] == '{' or trimmed[0] == '[') {
+        // Object or array — find matching brace
+        var depth: usize = 0;
+        var in_string = false;
+        var i: usize = 0;
+        const open = trimmed[0];
+        const close: u8 = if (open == '{') '}' else ']';
+        while (i < trimmed.len) : (i += 1) {
+            if (trimmed[i] == '"' and (i == 0 or trimmed[i - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (trimmed[i] == open) depth += 1;
+            if (trimmed[i] == close) {
+                depth -= 1;
+                if (depth == 0) return allocator.dupe(u8, trimmed[0 .. i + 1]);
+            }
+        }
+        return allocator.dupe(u8, trimmed);
+    } else {
+        // Number, boolean, null — read until delimiter
+        var end: usize = 0;
+        while (end < trimmed.len and trimmed[end] != ',' and trimmed[end] != '}' and trimmed[end] != ']' and trimmed[end] != '\n') {
+            end += 1;
+        }
+        return allocator.dupe(u8, mem.trim(u8, trimmed[0..end], " \t\r\n"));
+    }
+}
+
 /// Simple JSON indentation for the response viewer.
 /// Provides basic pretty-printing with optional ANSI colors.
 fn simpleJsonIndent(allocator: Allocator, input: []const u8, colorize: bool) ![]const u8 {
@@ -1135,6 +1379,52 @@ test "htmlToText br and hr conversion" {
     try std.testing.expect(mem.indexOf(u8, result, "line2") != null);
     try std.testing.expect(mem.indexOf(u8, result, "line3") != null);
     try std.testing.expect(mem.indexOf(u8, result, "\u{2500}") != null);
+}
+
+test "filterJsonPath simple key" {
+    const json = "{\"name\": \"Alice\", \"age\": 30}";
+
+    const name = try filterJsonPath(std.testing.allocator, json, "$.name");
+    defer std.testing.allocator.free(name);
+    try std.testing.expectEqualStrings("\"Alice\"", name);
+
+    const age = try filterJsonPath(std.testing.allocator, json, "$.age");
+    defer std.testing.allocator.free(age);
+    try std.testing.expectEqualStrings("30", age);
+}
+
+test "filterJsonPath nested key" {
+    const json = "{\"data\": {\"user\": {\"name\": \"Bob\"}}}";
+
+    const name = try filterJsonPath(std.testing.allocator, json, "$.data.user.name");
+    defer std.testing.allocator.free(name);
+    try std.testing.expectEqualStrings("\"Bob\"", name);
+}
+
+test "filterJsonPath array index" {
+    const json = "{\"items\": [\"first\", \"second\", \"third\"]}";
+
+    const first = try filterJsonPath(std.testing.allocator, json, "$.items[0]");
+    defer std.testing.allocator.free(first);
+    try std.testing.expectEqualStrings("\"first\"", first);
+
+    const second = try filterJsonPath(std.testing.allocator, json, "$.items[1]");
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings("\"second\"", second);
+}
+
+test "filterJsonPath with boolean and null" {
+    const json = "{\"active\": true, \"deleted\": false, \"value\": null}";
+
+    const active = try filterJsonPath(std.testing.allocator, json, "$.active");
+    defer std.testing.allocator.free(active);
+    try std.testing.expectEqualStrings("true", active);
+}
+
+test "filterJsonPath returns error for missing key" {
+    const json = "{\"name\": \"Alice\"}";
+    const result = filterJsonPath(std.testing.allocator, json, "$.nonexistent");
+    try std.testing.expectError(error.KeyNotFound, result);
 }
 
 test "highlightXml processing instruction gets dim" {

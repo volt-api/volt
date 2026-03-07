@@ -1,0 +1,1202 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Enterprise API Suite",
+    "description": "Large enterprise API collection with 100+ requests across 10 domains",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{global_token}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://api.enterprise.io" },
+    { "key": "api_version", "value": "v2" },
+    { "key": "global_token", "value": "ent-tok-abc123xyz" },
+    { "key": "admin_email", "value": "admin@enterprise.io" },
+    { "key": "timeout_ms", "value": "5000" }
+  ],
+  "item": [
+    {
+      "name": "users",
+      "item": [
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users?page=1&limit=50" },
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 200\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}" },
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ]
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{user_name}}\", \"email\": \"{{user_email}}\", \"role\": \"member\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"User created\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(201);",
+                  "});",
+                  "const jsonData = pm.response.json();",
+                  "pm.environment.set(\"user_id\", jsonData.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update User",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated Name\", \"email\": \"updated@enterprise.io\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Patch User Role",
+          "request": {
+            "method": "PATCH",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}/role" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"role\": \"admin\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Delete User",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}" }
+          }
+        },
+        {
+          "name": "Search Users",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/search?q={{search_query}}&sort=name" }
+          }
+        },
+        {
+          "name": "User Avatar Upload",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}/avatar" },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "avatar", "value": "profile.png", "type": "file" },
+                { "key": "resize", "value": "true" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List User Activity",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/{{user_id}}/activity" }
+          }
+        },
+        {
+          "name": "Bulk Import Users",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/users/bulk" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"name\":\"Alice\"},{\"name\":\"Bob\"},{\"name\":\"Charlie\"}]",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/login" },
+            "auth": { "type": "noauth" },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "username", "value": "{{admin_email}}" },
+                { "key": "password", "value": "{{admin_password}}" },
+                { "key": "grant_type", "value": "password" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Login success\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});",
+                  "const jsonData = pm.response.json();",
+                  "pm.environment.set(\"global_token\", jsonData.access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/refresh" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"refresh_token\": \"{{refresh_token}}\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/logout" }
+          }
+        },
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/register" },
+            "auth": { "type": "noauth" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"new@user.com\", \"password\": \"s3cret!\", \"name\": \"New User\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/forgot-password" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{admin_email}}\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/reset-password" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"{{reset_token}}\", \"password\": \"newP@ss!\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Verify Email",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/verify?token={{verify_token}}" }
+          }
+        },
+        {
+          "name": "Two Factor Setup",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/2fa/setup" }
+          }
+        },
+        {
+          "name": "Two Factor Verify",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/2fa/verify" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"123456\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "SSO Login",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/auth/sso/{{provider}}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "products",
+      "item": [
+        {
+          "name": "List Products",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products?category={{category}}&limit=25" },
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Request-ID", "value": "{{$guid}}" }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set(\"request_time\", \"{{$timestamp}}\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Product",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}" }
+          }
+        },
+        {
+          "name": "Create Product",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products" },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Widget Pro\", \"price\": 29.99, \"sku\": \"WGT-001\", \"category\": \"electronics\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                { "key": "key", "value": "X-Product-Key" },
+                { "key": "value", "value": "prod-key-{{api_version}}" },
+                { "key": "in", "value": "header" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Product",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Widget Pro v2\", \"price\": 34.99}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Delete Product",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}" }
+          }
+        },
+        {
+          "name": "Product Image Upload",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}/images" },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "value": "product.jpg", "type": "file" },
+                { "key": "alt_text", "value": "Product hero image" },
+                { "key": "position", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Product Reviews",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}/reviews" }
+          }
+        },
+        {
+          "name": "Add Product Review",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}/reviews" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"rating\": 5, \"comment\": \"Excellent product!\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Product Inventory",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/{{product_id}}/inventory" }
+          }
+        },
+        {
+          "name": "Bulk Update Prices",
+          "request": {
+            "method": "PATCH",
+            "url": { "raw": "{{base_url}}/{{api_version}}/products/bulk/prices" },
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"id\":1,\"price\":19.99},{\"id\":2,\"price\":24.99}]",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "item": [
+        {
+          "name": "List Orders",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders?status=pending&page=1" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status OK\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});",
+                  "pm.response.to.have.header(\"X-Total-Count\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Order",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}" }
+          }
+        },
+        {
+          "name": "Create Order",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\": [{\"product_id\": 1, \"quantity\": 2}], \"shipping_address\": \"123 Main St\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update Order Status",
+          "request": {
+            "method": "PATCH",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}/status" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"shipped\", \"tracking_number\": \"TRK-12345\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Cancel Order",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}" }
+          }
+        },
+        {
+          "name": "Order History",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/history?from={{start_date}}&to={{end_date}}" }
+          }
+        },
+        {
+          "name": "Order Invoice",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}/invoice" },
+            "header": [
+              { "key": "Accept", "value": "application/pdf" }
+            ]
+          }
+        },
+        {
+          "name": "Bulk Create Orders",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/bulk" },
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"items\":[{\"product_id\":1,\"qty\":1}]},{\"items\":[{\"product_id\":2,\"qty\":3}]}]",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Order Refund",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}/refund" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"amount\": 15.00, \"reason\": \"damaged\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Order Tracking",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/orders/{{order_id}}/tracking" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "payments",
+      "item": [
+        {
+          "name": "List Payment Methods",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/methods" },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{payment_user}}" },
+                { "key": "password", "value": "{{payment_secret}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Payment Method",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/methods" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\": \"card\", \"card_number\": \"4111111111111111\", \"exp\": \"12/25\", \"cvv\": \"123\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{payment_user}}" },
+                { "key": "password", "value": "{{payment_secret}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Process Payment",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/charge" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"order_id\": \"{{order_id}}\", \"amount\": 59.98, \"currency\": \"USD\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Payment processed\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});",
+                  "const jsonData = pm.response.json();",
+                  "pm.expect(jsonData.status).to.equal(\"captured\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Payment Refund",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/{{payment_id}}/refund" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"amount\": 10.00}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Payment History",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/history" }
+          }
+        },
+        {
+          "name": "Payment Receipt",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/{{payment_id}}/receipt" }
+          }
+        },
+        {
+          "name": "Subscription Create",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/subscriptions" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"plan\": \"pro\", \"interval\": \"monthly\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Subscription Cancel",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/subscriptions/{{sub_id}}" }
+          }
+        },
+        {
+          "name": "Payment Webhook Verify",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/webhook/verify" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"signature\": \"{{webhook_sig}}\", \"payload\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Currency Rates",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/payments/currencies" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "admin",
+      "item": [
+        {
+          "name": "Admin Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/dashboard" },
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                { "key": "key", "value": "X-Admin-Key" },
+                { "key": "value", "value": "{{admin_api_key}}" },
+                { "key": "in", "value": "header" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Admin List Users",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/users?role=all&page=1" }
+          }
+        },
+        {
+          "name": "Admin Ban User",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/users/{{user_id}}/ban" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reason\": \"Policy violation\", \"duration\": \"30d\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin Unban User",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/users/{{user_id}}/ban" }
+          }
+        },
+        {
+          "name": "Admin System Health",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/health" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"System healthy\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});",
+                  "pm.expect(pm.response.responseTime).to.be.below(500);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Audit Log",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/audit?from={{start_date}}" }
+          }
+        },
+        {
+          "name": "Admin Feature Flags",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/features" }
+          }
+        },
+        {
+          "name": "Admin Toggle Feature",
+          "request": {
+            "method": "PATCH",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/features/{{feature_id}}" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin Export Data",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/export" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"format\": \"csv\", \"entity\": \"users\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin Import Data",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/admin/import" },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "value": "data.csv", "type": "file" },
+                { "key": "entity", "value": "products" },
+                { "key": "overwrite", "value": "false" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "settings",
+      "item": [
+        {
+          "name": "Get Profile Settings",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/profile" }
+          }
+        },
+        {
+          "name": "Update Profile Settings",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/profile" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Admin User\", \"timezone\": \"UTC\", \"locale\": \"en-US\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Get Notification Preferences",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/notifications" }
+          }
+        },
+        {
+          "name": "Update Notification Preferences",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/notifications" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": true, \"push\": false, \"sms\": false}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Get API Keys",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/api-keys" }
+          }
+        },
+        {
+          "name": "Create API Key",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/api-keys" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"CI Key\", \"scopes\": [\"read\", \"write\"]}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Key created\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(201);",
+                  "});",
+                  "const jsonData = pm.response.json();",
+                  "pm.environment.set(\"new_api_key\", jsonData.key);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke API Key",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/api-keys/{{key_id}}" }
+          }
+        },
+        {
+          "name": "Get Theme Settings",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/theme" }
+          }
+        },
+        {
+          "name": "Update Theme Settings",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/theme" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"dark_mode\": true, \"accent_color\": \"#4A90D9\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Export Settings",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/settings/export" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "analytics",
+      "item": [
+        {
+          "name": "Dashboard Overview",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/dashboard?period=30d" }
+          }
+        },
+        {
+          "name": "Revenue Report",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/revenue?from={{start_date}}&to={{end_date}}" }
+          }
+        },
+        {
+          "name": "User Growth",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/users/growth" }
+          }
+        },
+        {
+          "name": "Top Products",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/products/top?limit=10" }
+          }
+        },
+        {
+          "name": "Conversion Funnel",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/funnel" }
+          }
+        },
+        {
+          "name": "Create Custom Report",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/reports" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Weekly Sales\", \"metrics\": [\"revenue\", \"orders\"], \"group_by\": \"day\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Get Report",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/reports/{{report_id}}" }
+          }
+        },
+        {
+          "name": "Delete Report",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/reports/{{report_id}}" }
+          }
+        },
+        {
+          "name": "Real-time Events",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/realtime" }
+          }
+        },
+        {
+          "name": "Export Analytics CSV",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/analytics/export" },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "format", "value": "csv" },
+                { "key": "period", "value": "30d" },
+                { "key": "metrics", "value": "revenue,orders,users" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "item": [
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications?unread=true" }
+          }
+        },
+        {
+          "name": "Get Notification",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/{{notification_id}}" }
+          }
+        },
+        {
+          "name": "Mark Read",
+          "request": {
+            "method": "PATCH",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/{{notification_id}}/read" }
+          }
+        },
+        {
+          "name": "Mark All Read",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/read-all" }
+          }
+        },
+        {
+          "name": "Delete Notification",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/{{notification_id}}" }
+          }
+        },
+        {
+          "name": "Send Push Notification",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/push" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"user_id\": \"{{user_id}}\", \"title\": \"Order Shipped\", \"body\": \"Your order is on its way!\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Send Email Notification",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/email" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"to\": \"{{admin_email}}\", \"subject\": \"Report Ready\", \"template\": \"report_ready\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Send SMS Notification",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/sms" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phone\": \"+1234567890\", \"message\": \"Verification code: 123456\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Notification Templates",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/templates" }
+          }
+        },
+        {
+          "name": "Create Notification Template",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/notifications/templates" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"welcome\", \"subject\": \"Welcome!\", \"body\": \"Hello {{user_name}}!\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "webhooks",
+      "item": [
+        {
+          "name": "List Webhooks",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks" }
+          }
+        },
+        {
+          "name": "Get Webhook",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}" }
+          }
+        },
+        {
+          "name": "Create Webhook",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"url\": \"https://hooks.example.com/receiver\", \"events\": [\"order.created\", \"order.shipped\"], \"secret\": \"wh-secret-123\"}",
+              "options": { "raw": { "language": "json" } }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Webhook created\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(201);",
+                  "});",
+                  "const jsonData = pm.response.json();",
+                  "pm.environment.set(\"webhook_id\", jsonData.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Webhook",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}" },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"url\": \"https://hooks.example.com/v2/receiver\", \"events\": [\"order.created\"]}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Delete Webhook",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}" }
+          }
+        },
+        {
+          "name": "Test Webhook",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}/test" }
+          }
+        },
+        {
+          "name": "Webhook Delivery Log",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}/deliveries" }
+          }
+        },
+        {
+          "name": "Retry Webhook Delivery",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}/deliveries/{{delivery_id}}/retry" }
+          }
+        },
+        {
+          "name": "Webhook Signing Key",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/{{webhook_id}}/rotate-secret" }
+          }
+        },
+        {
+          "name": "Webhook Events List",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/events" }
+          }
+        },
+        {
+          "name": "Webhook Health Check",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/{{api_version}}/webhooks/health" },
+            "description": "Check overall webhook delivery health and retry queue status"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.environment.set(\"check_time\", \"{{$timestamp}}\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Health OK\", function () {",
+                  "    pm.expect(pm.response.code).to.equal(200);",
+                  "});",
+                  "pm.response.to.have.header(\"Content-Type\");"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

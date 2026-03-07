@@ -126,6 +126,198 @@ pub const monokai = ThemeColors{
     .reset = "\x1b[0m",
 };
 
+/// Rosé Pine theme - muted purples/pinks with rose gold accents.
+pub const rose_pine = ThemeColors{
+    .primary = "\x1b[38;5;211m",
+    .success = "\x1b[38;5;108m",
+    .error_color = "\x1b[38;5;167m",
+    .warning = "\x1b[38;5;216m",
+    .muted = "\x1b[38;5;59m",
+    .key = "\x1b[38;5;182m",
+    .string = "\x1b[38;5;216m",
+    .number = "\x1b[38;5;211m",
+    .boolean = "\x1b[38;5;139m",
+    .null_color = "\x1b[38;5;59m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Catppuccin Mocha theme - pastel colors on dark background.
+pub const catppuccin = ThemeColors{
+    .primary = "\x1b[38;5;183m",
+    .success = "\x1b[38;5;115m",
+    .error_color = "\x1b[38;5;211m",
+    .warning = "\x1b[38;5;223m",
+    .muted = "\x1b[38;5;60m",
+    .key = "\x1b[38;5;117m",
+    .string = "\x1b[38;5;115m",
+    .number = "\x1b[38;5;216m",
+    .boolean = "\x1b[38;5;183m",
+    .null_color = "\x1b[38;5;60m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// GitHub Dark Default theme.
+pub const github_dark = ThemeColors{
+    .primary = "\x1b[38;5;75m",
+    .success = "\x1b[38;5;114m",
+    .error_color = "\x1b[38;5;203m",
+    .warning = "\x1b[38;5;215m",
+    .muted = "\x1b[38;5;245m",
+    .key = "\x1b[38;5;75m",
+    .string = "\x1b[38;5;117m",
+    .number = "\x1b[38;5;117m",
+    .boolean = "\x1b[38;5;75m",
+    .null_color = "\x1b[38;5;245m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// GitHub Light Default theme.
+pub const github_light = ThemeColors{
+    .primary = "\x1b[38;5;33m",
+    .success = "\x1b[38;5;28m",
+    .error_color = "\x1b[38;5;160m",
+    .warning = "\x1b[38;5;130m",
+    .muted = "\x1b[38;5;102m",
+    .key = "\x1b[38;5;33m",
+    .string = "\x1b[38;5;25m",
+    .number = "\x1b[38;5;25m",
+    .boolean = "\x1b[38;5;33m",
+    .null_color = "\x1b[38;5;102m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// One Dark Pro theme - Atom editor style.
+pub const one_dark = ThemeColors{
+    .primary = "\x1b[38;5;75m",
+    .success = "\x1b[38;5;114m",
+    .error_color = "\x1b[38;5;204m",
+    .warning = "\x1b[38;5;180m",
+    .muted = "\x1b[38;5;59m",
+    .key = "\x1b[38;5;204m",
+    .string = "\x1b[38;5;114m",
+    .number = "\x1b[38;5;173m",
+    .boolean = "\x1b[38;5;173m",
+    .null_color = "\x1b[38;5;59m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Gruvbox Dark theme - retro earthy tones.
+pub const gruvbox = ThemeColors{
+    .primary = "\x1b[38;5;108m",
+    .success = "\x1b[38;5;142m",
+    .error_color = "\x1b[38;5;167m",
+    .warning = "\x1b[38;5;214m",
+    .muted = "\x1b[38;5;243m",
+    .key = "\x1b[38;5;108m",
+    .string = "\x1b[38;5;142m",
+    .number = "\x1b[38;5;175m",
+    .boolean = "\x1b[38;5;175m",
+    .null_color = "\x1b[38;5;243m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Tokyo Night theme - blue-purple neon palette.
+pub const tokyo_night = ThemeColors{
+    .primary = "\x1b[38;5;75m",
+    .success = "\x1b[38;5;115m",
+    .error_color = "\x1b[38;5;203m",
+    .warning = "\x1b[38;5;215m",
+    .muted = "\x1b[38;5;59m",
+    .key = "\x1b[38;5;75m",
+    .string = "\x1b[38;5;115m",
+    .number = "\x1b[38;5;215m",
+    .boolean = "\x1b[38;5;173m",
+    .null_color = "\x1b[38;5;59m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Kanagawa theme - wave theme with Japanese palette.
+pub const kanagawa = ThemeColors{
+    .primary = "\x1b[38;5;110m",
+    .success = "\x1b[38;5;108m",
+    .error_color = "\x1b[38;5;167m",
+    .warning = "\x1b[38;5;179m",
+    .muted = "\x1b[38;5;102m",
+    .key = "\x1b[38;5;110m",
+    .string = "\x1b[38;5;108m",
+    .number = "\x1b[38;5;175m",
+    .boolean = "\x1b[38;5;173m",
+    .null_color = "\x1b[38;5;102m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Everforest Dark theme - green-based nature palette.
+pub const everforest = ThemeColors{
+    .primary = "\x1b[38;5;108m",
+    .success = "\x1b[38;5;142m",
+    .error_color = "\x1b[38;5;167m",
+    .warning = "\x1b[38;5;214m",
+    .muted = "\x1b[38;5;102m",
+    .key = "\x1b[38;5;108m",
+    .string = "\x1b[38;5;142m",
+    .number = "\x1b[38;5;175m",
+    .boolean = "\x1b[38;5;210m",
+    .null_color = "\x1b[38;5;102m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Ayu Dark theme - warm orange accents.
+pub const ayu = ThemeColors{
+    .primary = "\x1b[38;5;208m",
+    .success = "\x1b[38;5;149m",
+    .error_color = "\x1b[38;5;203m",
+    .warning = "\x1b[38;5;215m",
+    .muted = "\x1b[38;5;59m",
+    .key = "\x1b[38;5;208m",
+    .string = "\x1b[38;5;149m",
+    .number = "\x1b[38;5;208m",
+    .boolean = "\x1b[38;5;208m",
+    .null_color = "\x1b[38;5;59m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Synthwave '84 theme - neon pink/cyan/purple.
+pub const synthwave = ThemeColors{
+    .primary = "\x1b[38;5;51m",
+    .success = "\x1b[38;5;84m",
+    .error_color = "\x1b[38;5;197m",
+    .warning = "\x1b[38;5;220m",
+    .muted = "\x1b[38;5;60m",
+    .key = "\x1b[38;5;51m",
+    .string = "\x1b[38;5;213m",
+    .number = "\x1b[38;5;141m",
+    .boolean = "\x1b[38;5;213m",
+    .null_color = "\x1b[38;5;60m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
+/// Material Palenight theme - muted pastels.
+pub const palenight = ThemeColors{
+    .primary = "\x1b[38;5;111m",
+    .success = "\x1b[38;5;115m",
+    .error_color = "\x1b[38;5;204m",
+    .warning = "\x1b[38;5;222m",
+    .muted = "\x1b[38;5;60m",
+    .key = "\x1b[38;5;111m",
+    .string = "\x1b[38;5;115m",
+    .number = "\x1b[38;5;216m",
+    .boolean = "\x1b[38;5;204m",
+    .null_color = "\x1b[38;5;60m",
+    .bold = "\x1b[1m",
+    .reset = "\x1b[0m",
+};
+
 /// No-color theme - all empty strings, for piping and non-TTY output.
 pub const none = ThemeColors{
     .primary = "",
@@ -150,6 +342,18 @@ const builtin_themes = [_]Theme{
     .{ .name = "nord", .colors = nord },
     .{ .name = "dracula", .colors = dracula },
     .{ .name = "monokai", .colors = monokai },
+    .{ .name = "rose_pine", .colors = rose_pine },
+    .{ .name = "catppuccin", .colors = catppuccin },
+    .{ .name = "github_dark", .colors = github_dark },
+    .{ .name = "github_light", .colors = github_light },
+    .{ .name = "one_dark", .colors = one_dark },
+    .{ .name = "gruvbox", .colors = gruvbox },
+    .{ .name = "tokyo_night", .colors = tokyo_night },
+    .{ .name = "kanagawa", .colors = kanagawa },
+    .{ .name = "everforest", .colors = everforest },
+    .{ .name = "ayu", .colors = ayu },
+    .{ .name = "synthwave", .colors = synthwave },
+    .{ .name = "palenight", .colors = palenight },
     .{ .name = "none", .colors = none },
 };
 
@@ -273,6 +477,18 @@ test "list themes" {
     try std.testing.expect(mem.indexOf(u8, output, "nord") != null);
     try std.testing.expect(mem.indexOf(u8, output, "dracula") != null);
     try std.testing.expect(mem.indexOf(u8, output, "monokai") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "rose_pine") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "catppuccin") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "github_dark") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "github_light") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "one_dark") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "gruvbox") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "tokyo_night") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "kanagawa") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "everforest") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "ayu") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "synthwave") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "palenight") != null);
     try std.testing.expect(mem.indexOf(u8, output, "none") != null);
     try std.testing.expect(mem.indexOf(u8, output, "Available Themes") != null);
 }
@@ -291,4 +507,54 @@ test "theme colors are consistent" {
             try std.testing.expectEqualStrings("\x1b[1m", theme.colors.bold);
         }
     }
+}
+
+test "new themes have correct primary colors" {
+    // Rosé Pine - rose gold primary (256-color 211)
+    const rp = getTheme("rose_pine");
+    try std.testing.expectEqualStrings("\x1b[38;5;211m", rp.primary);
+
+    // Catppuccin Mocha - lavender primary (256-color 183)
+    const cat = getTheme("catppuccin");
+    try std.testing.expectEqualStrings("\x1b[38;5;183m", cat.primary);
+
+    // GitHub Dark - blue primary (256-color 75)
+    const ghd = getTheme("github_dark");
+    try std.testing.expectEqualStrings("\x1b[38;5;75m", ghd.primary);
+
+    // GitHub Light - blue primary (256-color 33)
+    const ghl = getTheme("github_light");
+    try std.testing.expectEqualStrings("\x1b[38;5;33m", ghl.primary);
+
+    // One Dark - blue primary (256-color 75)
+    const od = getTheme("one_dark");
+    try std.testing.expectEqualStrings("\x1b[38;5;75m", od.primary);
+
+    // Gruvbox - aqua primary (256-color 108)
+    const gb = getTheme("gruvbox");
+    try std.testing.expectEqualStrings("\x1b[38;5;108m", gb.primary);
+
+    // Tokyo Night - blue primary (256-color 75)
+    const tn = getTheme("tokyo_night");
+    try std.testing.expectEqualStrings("\x1b[38;5;75m", tn.primary);
+
+    // Kanagawa - blue primary (256-color 110)
+    const kg = getTheme("kanagawa");
+    try std.testing.expectEqualStrings("\x1b[38;5;110m", kg.primary);
+
+    // Everforest - green primary (256-color 108)
+    const ef = getTheme("everforest");
+    try std.testing.expectEqualStrings("\x1b[38;5;108m", ef.primary);
+
+    // Ayu - orange primary (256-color 208)
+    const ay = getTheme("ayu");
+    try std.testing.expectEqualStrings("\x1b[38;5;208m", ay.primary);
+
+    // Synthwave - cyan primary (256-color 51)
+    const sw = getTheme("synthwave");
+    try std.testing.expectEqualStrings("\x1b[38;5;51m", sw.primary);
+
+    // Palenight - blue primary (256-color 111)
+    const pn = getTheme("palenight");
+    try std.testing.expectEqualStrings("\x1b[38;5;111m", pn.primary);
 }

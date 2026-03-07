@@ -42,6 +42,7 @@ pub fn shareRequest(allocator: Allocator, request: *const VoltFile.VoltRequest, 
 /// Generate a cURL command from a request.
 fn shareCurl(allocator: Allocator, request: *const VoltFile.VoltRequest) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("curl");
@@ -90,6 +91,7 @@ fn shareCurl(allocator: Allocator, request: *const VoltFile.VoltRequest) ![]cons
                 }
             }
         },
+        .aws, .hawk, .oauth_cc, .oauth_password, .oauth_implicit => {},
         .none => {},
     }
 
@@ -126,6 +128,7 @@ fn shareBase64(allocator: Allocator, request: *const VoltFile.VoltRequest) ![]co
 /// Percent-encode minimal request info into a query string format.
 fn shareUrl(allocator: Allocator, request: *const VoltFile.VoltRequest) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("volt://request?method=");
@@ -165,6 +168,7 @@ pub fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]const u8 {
     const decoder = std.base64.standard;
     const decoded_len = decoder.Decoder.calcSizeForSlice(encoded) catch return error.InvalidBase64;
     const buf = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(buf);
     decoder.Decoder.decode(buf, encoded) catch return error.InvalidBase64;
     return buf;
 }
@@ -187,10 +191,11 @@ pub fn importFromBase64(allocator: Allocator, encoded: []const u8) !ImportedRequ
     errdefer allocator.free(decoded);
 
     const request = VoltFile.parse(allocator, decoded) catch {
-        allocator.free(decoded);
+        // decoded failed to parse; return default request but keep decoded
+        // alive so deinit() can safely free it
         return .{
             .request = VoltFile.VoltRequest.init(allocator),
-            .content_buf = &.{},
+            .content_buf = decoded,
         };
     };
 
@@ -216,6 +221,7 @@ pub fn generateShareString(allocator: Allocator, request: *const VoltFile.VoltRe
 /// Serialize a VoltRequest back into .volt file format.
 fn serializeRequest(allocator: Allocator, request: *const VoltFile.VoltRequest) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     // Name

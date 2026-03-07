@@ -8,8 +8,12 @@ const VoltFile = core.VoltFile;
 const HttpClient = core.HttpClient;
 const Environment = core.Environment;
 const Formatter = core.Formatter;
+const CollectionOrganizer = core.CollectionOrganizer;
 
 // ── TUI Application ────────────────────────────────────────────────────
+
+const SESSION_FILE = ".volt-session";
+const LAZY_RENDER_THRESHOLD: usize = 10 * 1024 * 1024;
 
 pub const Pane = enum {
     collection,
@@ -81,6 +85,16 @@ pub const App = struct {
     response_scroll: usize = 0,
     response_formatted: ?[]const u8 = null,
 
+    // Lazy rendering for large responses
+    response_line_offsets: std.ArrayList(usize),
+    response_total_lines: usize = 0,
+
+    // Split-view for comparing two responses
+    split_mode: bool = false,
+    split_response: ?[]const u8 = null,
+    split_response_formatted: ?[]const u8 = null,
+    split_scroll: usize = 0,
+
     // Tab state
     tabs: std.ArrayList(Tab),
     active_tab: usize = 0,
@@ -95,6 +109,12 @@ pub const App = struct {
     response_search_query: std.ArrayList(u8),
     response_search_matches: std.ArrayList(usize),
     response_search_current: usize = 0,
+
+    // Collection tree view (CollectionOrganizer integration)
+    collection_tree: ?CollectionOrganizer.TreeNode = null,
+    collection_search_query: std.ArrayList(u8),
+    collection_search_results: std.ArrayList(CollectionOrganizer.SearchResult),
+    collection_search_active: bool = false,
 
     // Environment
     env_manager: Environment.EnvManager,
@@ -123,6 +143,9 @@ pub const App = struct {
             .search_results = std.ArrayList(usize).init(allocator),
             .response_search_query = std.ArrayList(u8).init(allocator),
             .response_search_matches = std.ArrayList(usize).init(allocator),
+            .response_line_offsets = std.ArrayList(usize).init(allocator),
+            .collection_search_query = std.ArrayList(u8).init(allocator),
+            .collection_search_results = std.ArrayList(CollectionOrganizer.SearchResult).init(allocator),
             .env_manager = Environment.EnvManager.init(allocator),
             .command_buf = std.ArrayList(u8).init(allocator),
             .collection_dir = dir,
@@ -133,6 +156,8 @@ pub const App = struct {
         try app.tabs.append(first_tab);
 
         try app.scanCollection(dir);
+        app.rebuildCollectionTree();
+        app.loadSession();
         return app;
     }
 
@@ -148,9 +173,15 @@ pub const App = struct {
         self.search_results.deinit();
         self.response_search_query.deinit();
         self.response_search_matches.deinit();
+        self.response_line_offsets.deinit();
+        self.collection_search_query.deinit();
+        self.collection_search_results.deinit();
+        if (self.collection_tree) |*tree| tree.deinit();
         self.env_manager.deinit();
         self.command_buf.deinit();
         if (self.response_formatted) |f| self.allocator.free(f);
+        if (self.split_response_formatted) |f| self.allocator.free(f);
+        if (self.split_response) |s| self.allocator.free(s);
     }
 
     pub fn scanCollection(self: *App, dir: []const u8) !void {
@@ -193,9 +224,17 @@ pub const App = struct {
             const event = input.readKey();
             try self.handleInput(event);
         }
+
+        // Save session on quit
+        self.saveSession();
     }
 
     fn handleInput(self: *App, event: input.InputEvent) !void {
+        // Intercept collection organizer search mode
+        if (self.collection_search_active) {
+            try self.handleCollectionOrganizerSearch(event);
+            return;
+        }
         // Intercept search modes before regular mode handling
         if (self.search_mode) {
             try self.handleCollectionSearch(event);
@@ -214,7 +253,10 @@ pub const App = struct {
 
     fn handleNormalMode(self: *App, event: input.InputEvent) !void {
         switch (event.key) {
-            .ctrl_c, .ctrl_q => self.running = false,
+            .ctrl_c, .ctrl_q => {
+                self.saveSession();
+                self.running = false;
+            },
             .ctrl_t => {
                 // Create new tab
                 try self.createNewTab();
@@ -262,7 +304,10 @@ pub const App = struct {
                 }
 
                 switch (event.char) {
-                    'q' => self.running = false,
+                    'q' => {
+                        self.saveSession();
+                        self.running = false;
+                    },
                     'j' => try self.navigateDown(),
                     'k' => try self.navigateUp(),
                     'h' => {
@@ -293,9 +338,9 @@ pub const App = struct {
                     '/' => {
                         // Enter search mode for active pane
                         if (self.active_pane == .collection) {
-                            self.search_mode = true;
-                            self.search_query.clearRetainingCapacity();
-                            self.search_results.clearRetainingCapacity();
+                            self.collection_search_active = true;
+                            self.collection_search_query.clearRetainingCapacity();
+                            self.collection_search_results.clearRetainingCapacity();
                             self.status_message = "/";
                         } else if (self.active_pane == .response) {
                             self.response_search_mode = true;
@@ -336,8 +381,9 @@ pub const App = struct {
                         }
                     },
                     'R' => {
-                        // Refresh collection file list
+                        // Refresh collection file list and rebuild tree
                         try self.scanCollection(self.collection_dir);
+                        self.rebuildCollectionTree();
                         self.status_message = "Refreshed";
                     },
                     'G' => {
@@ -440,11 +486,13 @@ pub const App = struct {
             .enter => {
                 const cmd = self.command_buf.items;
                 if (mem.eql(u8, cmd, "q") or mem.eql(u8, cmd, "quit")) {
+                    self.saveSession();
                     self.running = false;
                 } else if (mem.eql(u8, cmd, "w") or mem.eql(u8, cmd, "save")) {
                     try self.saveCurrentRequest();
                 } else if (mem.eql(u8, cmd, "wq")) {
                     try self.saveCurrentRequest();
+                    self.saveSession();
                     self.running = false;
                 } else if (mem.startsWith(u8, cmd, "e ")) {
                     const path = cmd[2..];
@@ -511,6 +559,23 @@ pub const App = struct {
             .response => {
                 if (self.response_scroll > 0) self.response_scroll -= 1;
             },
+        }
+    }
+
+    pub fn buildLineIndex(self: *App, content: []const u8) void {
+        self.response_line_offsets.clearRetainingCapacity();
+        self.response_total_lines = 0;
+        if (content.len == 0) return;
+
+        // First line always starts at offset 0
+        self.response_line_offsets.append(0) catch return;
+        self.response_total_lines = 1;
+
+        for (content, 0..) |byte, idx| {
+            if (byte == '\n' and idx + 1 < content.len) {
+                self.response_line_offsets.append(idx + 1) catch return;
+                self.response_total_lines += 1;
+            }
         }
     }
 
@@ -653,6 +718,12 @@ pub const App = struct {
 
         self.active_pane = .response;
         self.response_scroll = 0;
+
+        // Build line index for lazy rendering of large responses
+        if (self.response_formatted) |formatted| {
+            self.buildLineIndex(formatted);
+        }
+
         if (self.current_response) |resp| {
             var status_buf: [64]u8 = undefined;
             const status_msg = std.fmt.bufPrint(&status_buf, "HTTP {d} | {d:.0}ms", .{
@@ -766,6 +837,191 @@ pub const App = struct {
         }
         self.restoreTabState(self.active_tab);
         self.status_message = "Tab closed";
+    }
+
+    // ── Session Persistence ───────────────────────────────────────────
+
+    pub fn saveSession(self: *App) void {
+        // Ensure current tab state is saved before persisting
+        self.saveCurrentTabState();
+
+        // Build session file path relative to collection directory
+        var path_buf: [512]u8 = undefined;
+        const session_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{
+            self.collection_dir, SESSION_FILE,
+        }) catch return;
+
+        const file = std.fs.cwd().createFile(session_path, .{}) catch return;
+        defer file.close();
+
+        const writer = file.writer();
+
+        for (self.tabs.items) |tab| {
+            const fp = tab.file_path orelse "";
+            writer.print("tab: {s}\n", .{fp}) catch return;
+            writer.print("scroll: {d}\n", .{tab.response_scroll}) catch return;
+            writer.print("method: {d}\n", .{tab.method_index}) catch return;
+            writer.writeAll("---\n") catch return;
+        }
+        writer.print("active: {d}\n", .{self.active_tab}) catch return;
+    }
+
+    pub fn loadSession(self: *App) void {
+        var path_buf: [512]u8 = undefined;
+        const session_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{
+            self.collection_dir, SESSION_FILE,
+        }) catch return;
+
+        const file = std.fs.cwd().openFile(session_path, .{}) catch return;
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 256 * 1024) catch return;
+        defer self.allocator.free(content);
+
+        // Parse the session file
+        var loaded_tabs = std.ArrayList(Tab).init(self.allocator);
+        var active_idx: usize = 0;
+
+        var current_fp: ?[]const u8 = null;
+        var current_scroll: usize = 0;
+        var current_method: usize = 0;
+
+        var lines = mem.splitSequence(u8, content, "\n");
+        while (lines.next()) |line| {
+            const trimmed = mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+
+            if (mem.startsWith(u8, trimmed, "tab: ")) {
+                const val = trimmed[5..];
+                if (val.len > 0) {
+                    current_fp = self.allocator.dupe(u8, val) catch null;
+                } else {
+                    current_fp = null;
+                }
+            } else if (mem.startsWith(u8, trimmed, "scroll: ")) {
+                current_scroll = std.fmt.parseInt(usize, trimmed[8..], 10) catch 0;
+            } else if (mem.startsWith(u8, trimmed, "method: ")) {
+                current_method = std.fmt.parseInt(usize, trimmed[8..], 10) catch 0;
+            } else if (mem.eql(u8, trimmed, "---")) {
+                // Commit this tab entry
+                var new_tab = Tab.init(self.allocator);
+                new_tab.file_path = current_fp;
+                new_tab.response_scroll = current_scroll;
+                new_tab.method_index = current_method;
+                if (current_fp) |fp| {
+                    new_tab.label = fp;
+                }
+                loaded_tabs.append(new_tab) catch {};
+                // Reset for next entry
+                current_fp = null;
+                current_scroll = 0;
+                current_method = 0;
+            } else if (mem.startsWith(u8, trimmed, "active: ")) {
+                active_idx = std.fmt.parseInt(usize, trimmed[8..], 10) catch 0;
+            }
+        }
+
+        // Only restore if we actually loaded some tabs
+        if (loaded_tabs.items.len == 0) {
+            loaded_tabs.deinit();
+            return;
+        }
+
+        // Replace existing tabs
+        for (self.tabs.items) |*tab| tab.deinit();
+        self.tabs.deinit();
+        self.tabs = loaded_tabs;
+
+        // Clamp active index
+        if (active_idx >= self.tabs.items.len) {
+            active_idx = 0;
+        }
+        self.active_tab = active_idx;
+
+        // Restore active tab state and attempt to load its file
+        self.restoreTabState(active_idx);
+        if (self.tabs.items[active_idx].file_path) |fp| {
+            self.loadRequest(fp) catch {};
+        }
+
+        self.status_message = "Session restored";
+    }
+
+    // ── Collection Tree Integration ────────────────────────────────────
+
+    fn rebuildCollectionTree(self: *App) void {
+        // Free previous tree if any
+        if (self.collection_tree) |*tree| {
+            tree.deinit();
+            self.collection_tree = null;
+        }
+
+        if (self.collection_files.items.len == 0) return;
+
+        self.collection_tree = CollectionOrganizer.buildTree(
+            self.allocator,
+            self.collection_files.items,
+        ) catch null;
+    }
+
+    fn handleCollectionOrganizerSearch(self: *App, event: input.InputEvent) !void {
+        switch (event.key) {
+            .escape => {
+                self.collection_search_active = false;
+                self.collection_search_query.clearRetainingCapacity();
+                self.collection_search_results.clearRetainingCapacity();
+                self.status_message = null;
+            },
+            .enter => {
+                // Load first search result and exit search
+                if (self.collection_search_results.items.len > 0) {
+                    const result = self.collection_search_results.items[0];
+                    self.loadRequest(result.file_path) catch {};
+                }
+                self.collection_search_active = false;
+                self.collection_search_query.clearRetainingCapacity();
+                self.collection_search_results.clearRetainingCapacity();
+                self.status_message = null;
+            },
+            .backspace => {
+                if (self.collection_search_query.items.len > 0) {
+                    _ = self.collection_search_query.pop();
+                    try self.updateCollectionOrganizerSearch();
+                } else {
+                    self.collection_search_active = false;
+                    self.status_message = null;
+                }
+            },
+            .char => {
+                try self.collection_search_query.append(event.char);
+                try self.updateCollectionOrganizerSearch();
+            },
+            else => {},
+        }
+    }
+
+    fn updateCollectionOrganizerSearch(self: *App) !void {
+        self.collection_search_results.clearRetainingCapacity();
+        if (self.collection_search_query.items.len == 0) return;
+
+        // Build search entries from collection files
+        var entries = std.ArrayList(CollectionOrganizer.SearchEntry).init(self.allocator);
+        defer entries.deinit();
+        for (self.collection_files.items) |file_path| {
+            try entries.append(.{ .file_path = file_path });
+        }
+
+        var results = try CollectionOrganizer.searchRequests(
+            self.allocator,
+            entries.items,
+            self.collection_search_query.items,
+        );
+        defer results.deinit();
+
+        // Copy results into our persistent list
+        for (results.items) |result| {
+            try self.collection_search_results.append(result);
+        }
     }
 
     // ── Search Handlers ─────────────────────────────────────────────
@@ -1006,10 +1262,65 @@ pub const App = struct {
         }
 
         // Reserve bottom row for search prompt when in search mode
-        const list_height = if (self.search_mode) height -| 3 else height -| 2;
+        const in_search = self.search_mode or self.collection_search_active;
+        const list_height = if (in_search) height -| 3 else height -| 2;
 
-        if (self.search_mode and self.search_results.items.len > 0) {
-            // Show filtered results
+        if (self.collection_search_active) {
+            // Show CollectionOrganizer search results
+            if (self.collection_search_results.items.len > 0) {
+                const visible_count = @min(self.collection_search_results.items.len, list_height);
+                var i: usize = 0;
+                while (i < visible_count) : (i += 1) {
+                    const result = self.collection_search_results.items[i];
+                    const display_row = row + 2 + @as(u16, @intCast(i));
+
+                    if (i == 0) {
+                        // Highlight first match as selected
+                        try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
+                        try self.writer.moveTo(display_row, col);
+                        var fill: u16 = 0;
+                        while (fill < width) : (fill += 1) {
+                            try self.writer.write(" ");
+                        }
+                    } else {
+                        try self.writer.setStyle(.{ .fg = .white });
+                    }
+
+                    // Show method badge and file path
+                    var line_buf: [256]u8 = undefined;
+                    const line_text = std.fmt.bufPrint(&line_buf, "{s} {s}", .{
+                        result.method, result.file_path,
+                    }) catch result.file_path;
+                    try self.writer.writeAtTruncated(display_row, col + 1, line_text, width -| 2);
+                    try self.writer.resetStyle();
+                }
+            } else if (self.collection_search_query.items.len > 0) {
+                try self.writer.setStyle(.{ .fg = .bright_black, .italic = true });
+                try self.writer.writeAtTruncated(row + 3, col + 1, "No matches", width -| 2);
+                try self.writer.resetStyle();
+            }
+
+            // Search prompt at bottom
+            const search_row = row + height -| 1;
+            try self.writer.setStyle(.{ .fg = .yellow, .bold = true });
+            try self.writer.writeAt(search_row, col, "/");
+            try self.writer.setStyle(.{ .fg = .white });
+            if (self.collection_search_query.items.len > 0) {
+                try self.writer.writeAtTruncated(search_row, col + 1, self.collection_search_query.items, width -| 2);
+            }
+            // Show result count
+            if (self.collection_search_results.items.len > 0) {
+                var count_buf: [32]u8 = undefined;
+                const count_info = std.fmt.bufPrint(&count_buf, " [{d}]", .{
+                    self.collection_search_results.items.len,
+                }) catch "";
+                const qlen = @as(u16, @intCast(@min(self.collection_search_query.items.len, width -| 2)));
+                try self.writer.setStyle(.{ .fg = .bright_black });
+                try self.writer.writeAtTruncated(search_row, col + 1 + qlen, count_info, width -| (qlen + 2));
+            }
+            try self.writer.resetStyle();
+        } else if (self.search_mode and self.search_results.items.len > 0) {
+            // Show filtered results (legacy search mode)
             const visible_count = @min(self.search_results.items.len, list_height);
             var i: usize = 0;
             while (i < visible_count) : (i += 1) {
@@ -1031,41 +1342,8 @@ pub const App = struct {
                 try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
                 try self.writer.resetStyle();
             }
-        } else if (!self.search_mode) {
-            // Normal file list (not in search mode)
-            const visible_start = self.collection_scroll;
-            const visible_count = @min(self.collection_files.items.len - visible_start, list_height);
 
-            var i: usize = 0;
-            while (i < visible_count) : (i += 1) {
-                const file_idx = visible_start + i;
-                const file = self.collection_files.items[file_idx];
-                const display_row = row + 2 + @as(u16, @intCast(i));
-
-                if (file_idx == self.collection_selected) {
-                    if (is_active) {
-                        try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
-                    } else {
-                        try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
-                    }
-                    // Fill selection background
-                    try self.writer.moveTo(display_row, col);
-                    var fill: u16 = 0;
-                    while (fill < width) : (fill += 1) {
-                        try self.writer.write(" ");
-                    }
-                } else {
-                    try self.writer.setStyle(.{ .fg = .white });
-                }
-
-                // Show method badge + filename
-                try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
-                try self.writer.resetStyle();
-            }
-        }
-
-        // Render search prompt at bottom of collection pane
-        if (self.search_mode) {
+            // Render search prompt at bottom of collection pane
             const search_row = row + height -| 1;
             try self.writer.setStyle(.{ .fg = .yellow, .bold = true });
             try self.writer.writeAt(search_row, col, "/");
@@ -1073,6 +1351,98 @@ pub const App = struct {
             if (self.search_query.items.len > 0) {
                 try self.writer.writeAtTruncated(search_row, col + 1, self.search_query.items, width -| 2);
             }
+            try self.writer.resetStyle();
+        } else if (!self.search_mode and !self.collection_search_active) {
+            // Normal view: show tree structure if available, else flat list
+            if (self.collection_tree) |*tree| {
+                // Render tree view using CollectionOrganizer
+                const rendered = CollectionOrganizer.renderTree(self.allocator, tree) catch null;
+                if (rendered) |tree_text| {
+                    defer self.allocator.free(tree_text);
+
+                    var tree_lines = mem.splitSequence(u8, tree_text, "\n");
+                    var line_num: usize = 0;
+                    var display_idx: usize = 0;
+
+                    while (tree_lines.next()) |line| {
+                        if (line.len == 0) {
+                            line_num += 1;
+                            continue;
+                        }
+                        if (line_num < self.collection_scroll) {
+                            line_num += 1;
+                            continue;
+                        }
+                        if (display_idx >= list_height) break;
+
+                        const display_row = row + 2 + @as(u16, @intCast(display_idx));
+
+                        // Highlight the selected line
+                        if (line_num == self.collection_selected + self.collection_scroll) {
+                            if (is_active) {
+                                try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
+                            } else {
+                                try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
+                            }
+                            try self.writer.moveTo(display_row, col);
+                            var fill: u16 = 0;
+                            while (fill < width) : (fill += 1) {
+                                try self.writer.write(" ");
+                            }
+                        } else {
+                            // Color directories differently from files
+                            if (mem.endsWith(u8, line, "/")) {
+                                try self.writer.setStyle(.{ .fg = .cyan });
+                            } else {
+                                try self.writer.setStyle(.{ .fg = .white });
+                            }
+                        }
+
+                        try self.writer.writeAtTruncated(display_row, col + 1, line, width -| 2);
+                        try self.writer.resetStyle();
+
+                        line_num += 1;
+                        display_idx += 1;
+                    }
+                } else {
+                    // Fallback to flat list if tree rendering fails
+                    try self.renderFlatFileList(row, col, width, list_height, is_active);
+                }
+            } else {
+                // No tree available, use flat file list
+                try self.renderFlatFileList(row, col, width, list_height, is_active);
+            }
+        }
+    }
+
+    fn renderFlatFileList(self: *App, row: u16, col: u16, width: u16, list_height: usize, is_active: bool) !void {
+        const visible_start = self.collection_scroll;
+        const visible_count = @min(self.collection_files.items.len - visible_start, list_height);
+
+        var i: usize = 0;
+        while (i < visible_count) : (i += 1) {
+            const file_idx = visible_start + i;
+            const file = self.collection_files.items[file_idx];
+            const display_row = row + 2 + @as(u16, @intCast(i));
+
+            if (file_idx == self.collection_selected) {
+                if (is_active) {
+                    try self.writer.setStyle(.{ .bg = .cyan, .fg = .black, .bold = true });
+                } else {
+                    try self.writer.setStyle(.{ .bg = .bright_black, .fg = .white });
+                }
+                // Fill selection background
+                try self.writer.moveTo(display_row, col);
+                var fill: u16 = 0;
+                while (fill < width) : (fill += 1) {
+                    try self.writer.write(" ");
+                }
+            } else {
+                try self.writer.setStyle(.{ .fg = .white });
+            }
+
+            // Show method badge + filename
+            try self.writer.writeAtTruncated(display_row, col + 1, file, width -| 2);
             try self.writer.resetStyle();
         }
     }

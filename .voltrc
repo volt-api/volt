@@ -13,7 +13,7 @@ timeout: 30000
 # Default headers applied to all requests
 headers:
   - Accept: application/json
-  - User-Agent: Volt/1.0.0
+  - User-Agent: Volt/1.1.0
 
 # Output format: pretty | compact | raw
 output: pretty

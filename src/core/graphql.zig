@@ -140,15 +140,31 @@ pub fn execute(
         if (http_req.body) |b| allocator.free(b);
     }
 
-    // Parse response for errors
+    // Parse response for errors — use JSON parsing for accuracy
     const resp_body = gql_resp.http_response.bodySlice();
     if (resp_body.len > 0) {
-        // Simple check for "errors" key in response
-        if (mem.indexOf(u8, resp_body, "\"errors\"")) |_| {
-            gql_resp.has_errors = true;
-        }
-        if (mem.indexOf(u8, resp_body, "\"data\"")) |_| {
-            gql_resp.data = resp_body;
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, resp_body, .{}) catch null;
+        defer if (parsed) |p| p.deinit();
+        if (parsed) |p| {
+            if (p.value == .object) {
+                if (p.value.object.get("errors")) |errors_val| {
+                    // Only flag errors if it's a non-empty array
+                    if (errors_val == .array and errors_val.array.items.len > 0) {
+                        gql_resp.has_errors = true;
+                    }
+                }
+                if (p.value.object.get("data")) |_| {
+                    gql_resp.data = resp_body;
+                }
+            }
+        } else {
+            // Fallback to string search if JSON parsing fails
+            if (mem.indexOf(u8, resp_body, "\"errors\"")) |_| {
+                gql_resp.has_errors = true;
+            }
+            if (mem.indexOf(u8, resp_body, "\"data\"")) |_| {
+                gql_resp.data = resp_body;
+            }
         }
     }
 
@@ -563,6 +579,183 @@ pub fn findType(schema: *const GraphQLSchema, name: []const u8) ?SchemaType {
     return null;
 }
 
+// ── Field Autocomplete ──────────────────────────────────────────────────
+
+/// Return all field names of the given type that start with `prefix`.
+/// For an empty prefix, returns all fields. Returns an empty list if the
+/// type is not found.
+pub fn getFieldCompletions(schema: *const GraphQLSchema, type_name: []const u8, prefix: []const u8) std.ArrayList([]const u8) {
+    var results = std.ArrayList([]const u8).init(schema.types.allocator);
+    for (schema.types.items) |t| {
+        if (mem.eql(u8, t.name, type_name)) {
+            for (t.fields.items) |f| {
+                if (prefix.len == 0 or mem.startsWith(u8, f.name, prefix)) {
+                    results.append(f.name) catch {};
+                }
+            }
+            break;
+        }
+    }
+    return results;
+}
+
+/// Return all non-builtin type names (skip those starting with "__") that
+/// start with the given prefix.
+pub fn getTypeCompletions(schema: *const GraphQLSchema, prefix: []const u8) std.ArrayList([]const u8) {
+    var results = std.ArrayList([]const u8).init(schema.types.allocator);
+    for (schema.types.items) |t| {
+        if (mem.startsWith(u8, t.name, "__")) continue;
+        if (t.name.len == 0) continue;
+        if (prefix.len == 0 or mem.startsWith(u8, t.name, prefix)) {
+            results.append(t.name) catch {};
+        }
+    }
+    return results;
+}
+
+/// Given a type and field name, return the type of that field (for nested
+/// autocompletion). Returns null if the type or field is not found.
+pub fn resolveFieldType(schema: *const GraphQLSchema, type_name: []const u8, field_name: []const u8) ?[]const u8 {
+    for (schema.types.items) |t| {
+        if (mem.eql(u8, t.name, type_name)) {
+            for (t.fields.items) |f| {
+                if (mem.eql(u8, f.name, field_name)) {
+                    if (f.type_name.len == 0) return null;
+                    return f.type_name;
+                }
+            }
+            return null;
+        }
+    }
+    return null;
+}
+
+// ── GraphQL Subscriptions (WebSocket-based, graphql-ws protocol) ────────
+
+pub const SubscriptionMessageType = enum {
+    connection_ack,
+    next,
+    @"error",
+    complete,
+    unknown,
+};
+
+pub const SubscriptionMessage = struct {
+    msg_type: SubscriptionMessageType,
+    id: ?[]const u8,
+    payload: ?[]const u8,
+};
+
+pub const GraphQLSubscription = struct {
+    endpoint: []const u8,
+    query: []const u8,
+    variables: ?[]const u8 = null,
+    operation_name: ?[]const u8 = null,
+    headers: std.ArrayList(VoltFile.Header),
+    connected: bool = false,
+    message_count: usize = 0,
+
+    pub fn init(allocator: Allocator, endpoint: []const u8, query: []const u8) GraphQLSubscription {
+        return .{
+            .endpoint = endpoint,
+            .query = query,
+            .headers = std.ArrayList(VoltFile.Header).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *GraphQLSubscription) void {
+        self.headers.deinit();
+    }
+};
+
+/// Build a `connection_init` message per the graphql-ws protocol.
+pub fn buildSubscriptionInit(allocator: Allocator, sub: *const GraphQLSubscription) ![]const u8 {
+    _ = sub;
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    try writer.writeAll("{\"type\":\"connection_init\",\"payload\":{}}");
+
+    return buf.toOwnedSlice();
+}
+
+/// Build a `subscribe` message per the graphql-ws protocol.
+pub fn buildSubscriptionStart(allocator: Allocator, sub: *const GraphQLSubscription, id: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    try writer.writeAll("{\"id\":");
+    try writeJsonString(writer, id);
+    try writer.writeAll(",\"type\":\"subscribe\",\"payload\":{\"query\":");
+    try writeJsonString(writer, sub.query);
+
+    if (sub.variables) |vars| {
+        try writer.writeAll(",\"variables\":");
+        try writer.writeAll(vars);
+    } else {
+        try writer.writeAll(",\"variables\":{}");
+    }
+
+    if (sub.operation_name) |op| {
+        try writer.writeAll(",\"operationName\":");
+        try writeJsonString(writer, op);
+    }
+
+    try writer.writeAll("}}");
+    return buf.toOwnedSlice();
+}
+
+/// Parse an incoming subscription message from the server.
+pub fn parseSubscriptionMessage(content: []const u8) SubscriptionMessage {
+    var result = SubscriptionMessage{
+        .msg_type = .unknown,
+        .id = null,
+        .payload = null,
+    };
+
+    // Extract "type" value
+    if (extractJsonStringValue(content, "\"type\"")) |type_str| {
+        if (mem.eql(u8, type_str, "connection_ack")) {
+            result.msg_type = .connection_ack;
+        } else if (mem.eql(u8, type_str, "next")) {
+            result.msg_type = .next;
+        } else if (mem.eql(u8, type_str, "error")) {
+            result.msg_type = .@"error";
+        } else if (mem.eql(u8, type_str, "complete")) {
+            result.msg_type = .complete;
+        }
+    }
+
+    // Extract "id" value
+    result.id = extractJsonStringValue(content, "\"id\"");
+
+    // Extract "payload" — find the payload object as a raw slice
+    if (mem.indexOf(u8, content, "\"payload\"")) |key_pos| {
+        var pos = key_pos + "\"payload\"".len;
+        // Skip `: `
+        while (pos < content.len and (content[pos] == ':' or content[pos] == ' ' or content[pos] == '\t')) : (pos += 1) {}
+        if (pos < content.len and content[pos] == '{') {
+            if (findMatchingBrace(content, pos)) |end| {
+                result.payload = content[pos .. end + 1];
+            }
+        }
+    }
+
+    return result;
+}
+
+/// Build a `complete` (stop) message per the graphql-ws protocol.
+pub fn buildSubscriptionStop(allocator: Allocator, id: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    try writer.writeAll("{\"id\":");
+    try writeJsonString(writer, id);
+    try writer.writeAll(",\"type\":\"complete\"}");
+
+    return buf.toOwnedSlice();
+}
+
 /// Basic query validation against a schema.
 /// Extracts field names from the query and checks they exist in schema types.
 /// Returns a list of validation error messages (empty if valid).
@@ -623,6 +816,154 @@ pub fn validateQuery(allocator: Allocator, query: []const u8, schema: *const Gra
 
 fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
+}
+
+// ── Schema Caching ──────────────────────────────────────────────────────
+//
+// Caches introspection results to .volt-cache/ for offline validation
+// and autocomplete. Cache files include a TTL timestamp.
+
+pub const SchemaCache = struct {
+    cache_dir: []const u8,
+    ttl_seconds: i64,
+
+    pub const default_cache_dir = ".volt-cache";
+    pub const default_ttl: i64 = 3600; // 1 hour
+
+    pub fn init() SchemaCache {
+        return .{
+            .cache_dir = default_cache_dir,
+            .ttl_seconds = default_ttl,
+        };
+    }
+
+    pub fn initCustom(cache_dir: []const u8, ttl_seconds: i64) SchemaCache {
+        return .{
+            .cache_dir = cache_dir,
+            .ttl_seconds = ttl_seconds,
+        };
+    }
+
+    /// Build the cache file path for a given endpoint.
+    /// Hashes the endpoint URL to produce a deterministic filename.
+    pub fn cacheFilePath(self: *const SchemaCache, allocator: Allocator, endpoint: []const u8) ![]const u8 {
+        // Simple hash of endpoint URL for the filename
+        var hash: u32 = 0;
+        for (endpoint) |c| {
+            hash = hash *% 31 +% @as(u32, c);
+        }
+        return std.fmt.allocPrint(allocator, "{s}/schema-{x:0>8}.json", .{ self.cache_dir, hash });
+    }
+
+    /// Cache a schema introspection result to disk.
+    /// Writes both the raw JSON and a metadata file with the timestamp.
+    pub fn cacheSchema(self: *const SchemaCache, allocator: Allocator, endpoint: []const u8, json_body: []const u8) !void {
+        // Ensure cache directory exists
+        std.fs.cwd().makePath(self.cache_dir) catch {};
+
+        const file_path = try self.cacheFilePath(allocator, endpoint);
+        defer allocator.free(file_path);
+
+        // Write schema JSON
+        const file = try std.fs.cwd().createFile(file_path, .{});
+        defer file.close();
+        try file.writeAll(json_body);
+
+        // Write metadata (timestamp)
+        const meta_path = try std.fmt.allocPrint(allocator, "{s}.meta", .{file_path});
+        defer allocator.free(meta_path);
+
+        const meta_file = try std.fs.cwd().createFile(meta_path, .{});
+        defer meta_file.close();
+
+        var ts_buf: [32]u8 = undefined;
+        const ts_str = std.fmt.bufPrint(&ts_buf, "{d}", .{std.time.timestamp()}) catch return;
+        try meta_file.writeAll(ts_str);
+    }
+
+    /// Load a cached schema from disk.
+    /// Returns null if the cache doesn't exist or has expired.
+    pub fn loadCachedSchema(self: *const SchemaCache, allocator: Allocator, endpoint: []const u8) ?GraphQLSchema {
+        const file_path = self.cacheFilePath(allocator, endpoint) catch return null;
+        defer allocator.free(file_path);
+
+        // Check if cache is still valid
+        if (!self.isCacheValid(allocator, file_path)) return null;
+
+        // Read cached JSON
+        const file = std.fs.cwd().openFile(file_path, .{}) catch return null;
+        defer file.close();
+
+        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return null;
+        defer allocator.free(content);
+
+        return parseIntrospectionResult(allocator, content);
+    }
+
+    /// Check if a cache file is still within TTL.
+    pub fn isCacheValid(self: *const SchemaCache, allocator: Allocator, file_path: []const u8) bool {
+        const meta_path = std.fmt.allocPrint(allocator, "{s}.meta", .{file_path}) catch return false;
+        defer allocator.free(meta_path);
+
+        const meta_file = std.fs.cwd().openFile(meta_path, .{}) catch return false;
+        defer meta_file.close();
+
+        var meta_buf: [32]u8 = undefined;
+        const bytes_read = meta_file.readAll(&meta_buf) catch return false;
+        const ts_str = meta_buf[0..bytes_read];
+
+        const cached_time = std.fmt.parseInt(i64, ts_str, 10) catch return false;
+        const now = std.time.timestamp();
+
+        return (now - cached_time) < self.ttl_seconds;
+    }
+
+    /// Invalidate (delete) cached schema for an endpoint.
+    pub fn invalidate(self: *const SchemaCache, allocator: Allocator, endpoint: []const u8) void {
+        const file_path = self.cacheFilePath(allocator, endpoint) catch return;
+        defer allocator.free(file_path);
+
+        std.fs.cwd().deleteFile(file_path) catch {};
+
+        const meta_path = std.fmt.allocPrint(allocator, "{s}.meta", .{file_path}) catch return;
+        defer allocator.free(meta_path);
+        std.fs.cwd().deleteFile(meta_path) catch {};
+    }
+};
+
+/// Execute a GraphQL introspection query with schema caching.
+/// First checks the cache; if expired or missing, runs introspection and caches the result.
+pub fn introspectWithCache(
+    allocator: Allocator,
+    endpoint: []const u8,
+    headers: []const VoltFile.Header,
+    cache: *const SchemaCache,
+    config: HttpClient.ClientConfig,
+) !GraphQLSchema {
+    // Try cache first
+    if (cache.loadCachedSchema(allocator, endpoint)) |schema| {
+        return schema;
+    }
+
+    // Cache miss — run introspection
+    var gql_req = GraphQLRequest.init(allocator, endpoint);
+    defer gql_req.deinit();
+    gql_req.query = introspectionQuery();
+
+    for (headers) |h| {
+        try gql_req.headers.append(h);
+    }
+
+    var gql_resp = try execute(allocator, &gql_req, config);
+    defer gql_resp.deinit();
+
+    const body = gql_resp.http_response.bodySlice();
+    if (body.len == 0) return error.EmptyResponse;
+
+    // Cache the result
+    cache.cacheSchema(allocator, endpoint, body) catch {};
+
+    return parseIntrospectionResult(allocator, body) orelse return error.InvalidSchema;
 }
 
 // ── Introspection Tests ─────────────────────────────────────────────────
@@ -698,6 +1039,53 @@ test "formatSchema skips builtins and groups by kind" {
     try std.testing.expect(mem.indexOf(u8, output, "SCALAR") != null);
 }
 
+test "schema cache file path generation" {
+    const cache = SchemaCache.init();
+    const path = try cache.cacheFilePath(std.testing.allocator, "https://api.example.com/graphql");
+    defer std.testing.allocator.free(path);
+
+    try std.testing.expect(mem.startsWith(u8, path, ".volt-cache/schema-"));
+    try std.testing.expect(mem.endsWith(u8, path, ".json"));
+}
+
+test "schema cache file path is deterministic" {
+    const cache = SchemaCache.init();
+
+    const path1 = try cache.cacheFilePath(std.testing.allocator, "https://api.example.com/graphql");
+    defer std.testing.allocator.free(path1);
+
+    const path2 = try cache.cacheFilePath(std.testing.allocator, "https://api.example.com/graphql");
+    defer std.testing.allocator.free(path2);
+
+    try std.testing.expectEqualStrings(path1, path2);
+}
+
+test "schema cache different endpoints get different paths" {
+    const cache = SchemaCache.init();
+
+    const path1 = try cache.cacheFilePath(std.testing.allocator, "https://api.example.com/graphql");
+    defer std.testing.allocator.free(path1);
+
+    const path2 = try cache.cacheFilePath(std.testing.allocator, "https://other.example.com/graphql");
+    defer std.testing.allocator.free(path2);
+
+    try std.testing.expect(!mem.eql(u8, path1, path2));
+}
+
+test "schema cache custom config" {
+    const cache = SchemaCache.initCustom("/tmp/volt-cache", 7200);
+
+    try std.testing.expectEqualStrings("/tmp/volt-cache", cache.cache_dir);
+    try std.testing.expectEqual(@as(i64, 7200), cache.ttl_seconds);
+}
+
+test "schema cache default config" {
+    const cache = SchemaCache.init();
+
+    try std.testing.expectEqualStrings(".volt-cache", cache.cache_dir);
+    try std.testing.expectEqual(@as(i64, 3600), cache.ttl_seconds);
+}
+
 test "findType returns correct type" {
     const json =
         \\{"data":{"__schema":{"types":[
@@ -721,4 +1109,272 @@ test "findType returns correct type" {
 
     const not_found = findType(&schema, "NonExistent");
     try std.testing.expect(not_found == null);
+}
+
+// ── Field Autocomplete Tests ────────────────────────────────────────────
+
+const test_schema_json =
+    \\{"data":{"__schema":{"types":[
+    \\  {"name":"Query","kind":"OBJECT","description":null,"fields":[
+    \\    {"name":"users","type":{"name":"User","kind":"OBJECT","ofType":null}},
+    \\    {"name":"user","type":{"name":"User","kind":"OBJECT","ofType":null}},
+    \\    {"name":"posts","type":{"name":"Post","kind":"OBJECT","ofType":null}}
+    \\  ]},
+    \\  {"name":"User","kind":"OBJECT","description":"A user","fields":[
+    \\    {"name":"id","type":{"name":"ID","kind":"SCALAR","ofType":null}},
+    \\    {"name":"name","type":{"name":"String","kind":"SCALAR","ofType":null}},
+    \\    {"name":"email","type":{"name":"String","kind":"SCALAR","ofType":null}}
+    \\  ]},
+    \\  {"name":"Post","kind":"OBJECT","description":null,"fields":[
+    \\    {"name":"id","type":{"name":"ID","kind":"SCALAR","ofType":null}},
+    \\    {"name":"title","type":{"name":"String","kind":"SCALAR","ofType":null}},
+    \\    {"name":"author","type":{"name":"User","kind":"OBJECT","ofType":null}}
+    \\  ]},
+    \\  {"name":"__Schema","kind":"OBJECT","description":null,"fields":[]},
+    \\  {"name":"__Type","kind":"OBJECT","description":null,"fields":[]},
+    \\  {"name":"String","kind":"SCALAR","description":null,"fields":null},
+    \\  {"name":"ID","kind":"SCALAR","description":null,"fields":null}
+    \\],"queryType":{"name":"Query"},"mutationType":null,"subscriptionType":null}}}
+;
+
+test "getFieldCompletions returns all fields for empty prefix" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getFieldCompletions(&schema, "Query", "");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), completions.items.len);
+    try std.testing.expectEqualStrings("users", completions.items[0]);
+    try std.testing.expectEqualStrings("user", completions.items[1]);
+    try std.testing.expectEqualStrings("posts", completions.items[2]);
+}
+
+test "getFieldCompletions filters by prefix" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getFieldCompletions(&schema, "Query", "user");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), completions.items.len);
+    try std.testing.expectEqualStrings("users", completions.items[0]);
+    try std.testing.expectEqualStrings("user", completions.items[1]);
+}
+
+test "getFieldCompletions returns empty for unknown type" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getFieldCompletions(&schema, "NonExistent", "");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), completions.items.len);
+}
+
+test "getFieldCompletions returns empty for no matching prefix" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getFieldCompletions(&schema, "User", "zzz");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), completions.items.len);
+}
+
+test "getTypeCompletions returns non-builtin types" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getTypeCompletions(&schema, "");
+    defer completions.deinit();
+
+    // Should skip __Schema and __Type, include Query, User, Post, String, ID
+    try std.testing.expectEqual(@as(usize, 5), completions.items.len);
+
+    // Verify builtins are excluded
+    for (completions.items) |name| {
+        try std.testing.expect(!mem.startsWith(u8, name, "__"));
+    }
+}
+
+test "getTypeCompletions filters by prefix" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getTypeCompletions(&schema, "U");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), completions.items.len);
+    try std.testing.expectEqualStrings("User", completions.items[0]);
+}
+
+test "getTypeCompletions skips builtins even with __ prefix" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    var completions = getTypeCompletions(&schema, "__");
+    defer completions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), completions.items.len);
+}
+
+test "resolveFieldType returns correct type" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    // Query.users -> User
+    const users_type = resolveFieldType(&schema, "Query", "users");
+    try std.testing.expect(users_type != null);
+    try std.testing.expectEqualStrings("User", users_type.?);
+
+    // Post.author -> User
+    const author_type = resolveFieldType(&schema, "Post", "author");
+    try std.testing.expect(author_type != null);
+    try std.testing.expectEqualStrings("User", author_type.?);
+
+    // User.name -> String
+    const name_type = resolveFieldType(&schema, "User", "name");
+    try std.testing.expect(name_type != null);
+    try std.testing.expectEqualStrings("String", name_type.?);
+}
+
+test "resolveFieldType returns null for unknown type" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    const result = resolveFieldType(&schema, "NonExistent", "id");
+    try std.testing.expect(result == null);
+}
+
+test "resolveFieldType returns null for unknown field" {
+    var schema = parseIntrospectionResult(std.testing.allocator, test_schema_json) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer schema.deinit();
+
+    const result = resolveFieldType(&schema, "User", "nonexistent");
+    try std.testing.expect(result == null);
+}
+
+// ── Subscription Tests ──────────────────────────────────────────────────
+
+test "buildSubscriptionInit produces connection_init message" {
+    var sub = GraphQLSubscription.init(std.testing.allocator, "ws://localhost:4000/graphql", "subscription { messageAdded { id text } }");
+    defer sub.deinit();
+
+    const msg = try buildSubscriptionInit(std.testing.allocator, &sub);
+    defer std.testing.allocator.free(msg);
+
+    try std.testing.expectEqualStrings("{\"type\":\"connection_init\",\"payload\":{}}", msg);
+}
+
+test "buildSubscriptionStart produces subscribe message" {
+    var sub = GraphQLSubscription.init(std.testing.allocator, "ws://localhost:4000/graphql", "subscription { messageAdded { id text } }");
+    defer sub.deinit();
+
+    const msg = try buildSubscriptionStart(std.testing.allocator, &sub, "sub-1");
+    defer std.testing.allocator.free(msg);
+
+    try std.testing.expect(mem.indexOf(u8, msg, "\"id\":\"sub-1\"") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "\"type\":\"subscribe\"") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "\"query\":\"subscription") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "\"variables\":{}") != null);
+}
+
+test "buildSubscriptionStart with variables and operation_name" {
+    var sub = GraphQLSubscription.init(std.testing.allocator, "ws://localhost:4000/graphql", "subscription OnMsg($ch: String!) { messageAdded(channel: $ch) { id } }");
+    defer sub.deinit();
+    sub.variables = "{\"ch\":\"general\"}";
+    sub.operation_name = "OnMsg";
+
+    const msg = try buildSubscriptionStart(std.testing.allocator, &sub, "sub-2");
+    defer std.testing.allocator.free(msg);
+
+    try std.testing.expect(mem.indexOf(u8, msg, "\"id\":\"sub-2\"") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "\"variables\":{\"ch\":\"general\"}") != null);
+    try std.testing.expect(mem.indexOf(u8, msg, "\"operationName\":\"OnMsg\"") != null);
+}
+
+test "parseSubscriptionMessage connection_ack" {
+    const input = "{\"type\":\"connection_ack\"}";
+    const result = parseSubscriptionMessage(input);
+
+    try std.testing.expect(result.msg_type == .connection_ack);
+    try std.testing.expect(result.id == null);
+    try std.testing.expect(result.payload == null);
+}
+
+test "parseSubscriptionMessage next with payload" {
+    const input = "{\"id\":\"sub-1\",\"type\":\"next\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\",\"text\":\"hello\"}}}}";
+    const result = parseSubscriptionMessage(input);
+
+    try std.testing.expect(result.msg_type == .next);
+    try std.testing.expect(result.id != null);
+    try std.testing.expectEqualStrings("sub-1", result.id.?);
+    try std.testing.expect(result.payload != null);
+    try std.testing.expect(mem.indexOf(u8, result.payload.?, "messageAdded") != null);
+}
+
+test "parseSubscriptionMessage error" {
+    const input = "{\"id\":\"sub-1\",\"type\":\"error\",\"payload\":{\"message\":\"something went wrong\"}}";
+    const result = parseSubscriptionMessage(input);
+
+    try std.testing.expect(result.msg_type == .@"error");
+    try std.testing.expect(result.id != null);
+    try std.testing.expectEqualStrings("sub-1", result.id.?);
+    try std.testing.expect(result.payload != null);
+}
+
+test "parseSubscriptionMessage complete" {
+    const input = "{\"id\":\"sub-1\",\"type\":\"complete\"}";
+    const result = parseSubscriptionMessage(input);
+
+    try std.testing.expect(result.msg_type == .complete);
+    try std.testing.expect(result.id != null);
+    try std.testing.expectEqualStrings("sub-1", result.id.?);
+}
+
+test "parseSubscriptionMessage unknown type" {
+    const input = "{\"type\":\"ka\"}";
+    const result = parseSubscriptionMessage(input);
+
+    try std.testing.expect(result.msg_type == .unknown);
+}
+
+test "buildSubscriptionStop produces complete message" {
+    const msg = try buildSubscriptionStop(std.testing.allocator, "sub-1");
+    defer std.testing.allocator.free(msg);
+
+    try std.testing.expectEqualStrings("{\"id\":\"sub-1\",\"type\":\"complete\"}", msg);
+}
+
+test "GraphQLSubscription init defaults" {
+    var sub = GraphQLSubscription.init(std.testing.allocator, "ws://localhost/graphql", "subscription { test }");
+    defer sub.deinit();
+
+    try std.testing.expectEqualStrings("ws://localhost/graphql", sub.endpoint);
+    try std.testing.expectEqualStrings("subscription { test }", sub.query);
+    try std.testing.expect(sub.variables == null);
+    try std.testing.expect(sub.operation_name == null);
+    try std.testing.expect(sub.connected == false);
+    try std.testing.expectEqual(@as(usize, 0), sub.message_count);
 }

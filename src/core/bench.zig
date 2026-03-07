@@ -59,7 +59,69 @@ pub const BenchResult = struct {
     }
 };
 
-/// Run a load test against a .volt request
+/// Thread-safe result accumulator for concurrent benchmarks.
+const ThreadSafeResult = struct {
+    mutex: std.Thread.Mutex,
+    result: *BenchResult,
+    completed: usize,
+    total: usize,
+
+    fn recordSuccess(self: *ThreadSafeResult, timing: f64, status_code: u16) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.result.total_requests += 1;
+        self.result.successful += 1;
+        self.result.sum_ms += timing;
+        self.result.timings.append(timing) catch {};
+
+        if (timing < self.result.min_ms) self.result.min_ms = timing;
+        if (timing > self.result.max_ms) self.result.max_ms = timing;
+
+        const entry = self.result.status_codes.getOrPut(status_code) catch return;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 0;
+        }
+        entry.value_ptr.* += 1;
+
+        self.completed += 1;
+    }
+
+    fn recordFailure(self: *ThreadSafeResult) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.result.failed += 1;
+        self.result.errors += 1;
+        self.result.total_requests += 1;
+        self.completed += 1;
+    }
+};
+
+/// Worker function for each concurrent thread.
+fn benchWorker(
+    allocator: Allocator,
+    request: *const VoltFile.VoltRequest,
+    requests_to_run: usize,
+    timeout_ms: u32,
+    shared: *ThreadSafeResult,
+) void {
+    var i: usize = 0;
+    while (i < requests_to_run) : (i += 1) {
+        var response = HttpClient.execute(allocator, request, .{
+            .timeout_ms = timeout_ms,
+        }) catch {
+            shared.recordFailure();
+            continue;
+        };
+        defer response.deinit();
+
+        const timing = response.timing.total_ms;
+        shared.recordSuccess(timing, response.status_code);
+    }
+}
+
+/// Run a load test against a .volt request using concurrent threads.
 pub fn runBench(
     allocator: Allocator,
     request: *const VoltFile.VoltRequest,
@@ -75,59 +137,110 @@ pub fn runBench(
 
     const start_time = std.time.nanoTimestamp();
 
-    // Run requests sequentially (concurrent version would use threads)
-    // For now, run them in batches simulating concurrency
-    var completed: usize = 0;
+    // Use real concurrency via std.Thread
+    const num_threads = @min(config.concurrency, config.total_requests);
 
-    while (completed < config.total_requests) {
-        const batch_size = @min(config.concurrency, config.total_requests - completed);
-        var batch_completed: usize = 0;
+    var shared = ThreadSafeResult{
+        .mutex = .{},
+        .result = &result,
+        .completed = 0,
+        .total = config.total_requests,
+    };
 
-        while (batch_completed < batch_size) {
-            var response = HttpClient.execute(allocator, request, .{
-                .timeout_ms = config.timeout_ms,
-            }) catch {
-                result.failed += 1;
-                result.errors += 1;
-                result.total_requests += 1;
-                batch_completed += 1;
-                completed += 1;
-                continue;
-            };
-            defer response.deinit();
+    // Distribute requests across threads
+    const base_per_thread = config.total_requests / num_threads;
+    const remainder = config.total_requests % num_threads;
 
-            result.total_requests += 1;
-            result.successful += 1;
+    var threads = std.ArrayList(std.Thread).init(allocator);
+    defer threads.deinit();
 
-            const timing = response.timing.total_ms;
-            try result.timings.append(timing);
-            result.sum_ms += timing;
+    var t: usize = 0;
+    while (t < num_threads) : (t += 1) {
+        const count = base_per_thread + @as(usize, if (t < remainder) 1 else 0);
+        if (count == 0) continue;
 
-            if (timing < result.min_ms) result.min_ms = timing;
-            if (timing > result.max_ms) result.max_ms = timing;
+        const thread = std.Thread.spawn(.{}, benchWorker, .{
+            allocator,
+            request,
+            count,
+            config.timeout_ms,
+            &shared,
+        }) catch {
+            // Fallback: run remaining sequentially if spawn fails
+            benchWorker(allocator, request, count, config.timeout_ms, &shared);
+            continue;
+        };
+        try threads.append(thread);
+    }
 
-            // Track status codes
-            const entry = try result.status_codes.getOrPut(response.status_code);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = 0;
-            }
-            entry.value_ptr.* += 1;
+    // Print progress while threads are running
+    while (true) {
+        shared.mutex.lock();
+        const completed = shared.completed;
+        shared.mutex.unlock();
+        if (completed >= config.total_requests) break;
+        const pct = @as(f64, @floatFromInt(completed)) / @as(f64, @floatFromInt(config.total_requests)) * 100.0;
+        stdout.print("\r  Progress: {d}/{d} ({d:.0}%)", .{ completed, config.total_requests, pct }) catch {};
+        std.time.sleep(100 * std.time.ns_per_ms);
+    }
 
-            batch_completed += 1;
-            completed += 1;
-
-            // Progress indicator
-            if (completed % 10 == 0 or completed == config.total_requests) {
-                const pct = @as(f64, @floatFromInt(completed)) / @as(f64, @floatFromInt(config.total_requests)) * 100.0;
-                try stdout.print("\r  Progress: {d}/{d} ({d:.0}%)", .{ completed, config.total_requests, pct });
-            }
-        }
+    // Wait for all threads to finish
+    for (threads.items) |thread| {
+        thread.join();
     }
 
     const end_time = std.time.nanoTimestamp();
     result.total_time_ms = @as(f64, @floatFromInt(end_time - start_time)) / 1_000_000.0;
 
     try stdout.writeAll("\r                                        \r");
+
+    return result;
+}
+
+/// Run a load test sequentially (single-threaded fallback).
+pub fn runBenchSequential(
+    allocator: Allocator,
+    request: *const VoltFile.VoltRequest,
+    config: BenchConfig,
+) !BenchResult {
+    var result = BenchResult.init(allocator);
+
+    const start_time = std.time.nanoTimestamp();
+    var completed: usize = 0;
+
+    while (completed < config.total_requests) {
+        var response = HttpClient.execute(allocator, request, .{
+            .timeout_ms = config.timeout_ms,
+        }) catch {
+            result.failed += 1;
+            result.errors += 1;
+            result.total_requests += 1;
+            completed += 1;
+            continue;
+        };
+        defer response.deinit();
+
+        result.total_requests += 1;
+        result.successful += 1;
+
+        const timing = response.timing.total_ms;
+        try result.timings.append(timing);
+        result.sum_ms += timing;
+
+        if (timing < result.min_ms) result.min_ms = timing;
+        if (timing > result.max_ms) result.max_ms = timing;
+
+        const entry = try result.status_codes.getOrPut(response.status_code);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 0;
+        }
+        entry.value_ptr.* += 1;
+
+        completed += 1;
+    }
+
+    const end_time = std.time.nanoTimestamp();
+    result.total_time_ms = @as(f64, @floatFromInt(end_time - start_time)) / 1_000_000.0;
 
     return result;
 }
@@ -196,4 +309,28 @@ test "bench result stats" {
 
     try std.testing.expectEqual(@as(f64, 100.0), result.avgMs());
     try std.testing.expectEqual(@as(f64, 5.0), result.requestsPerSecond());
+}
+
+test "thread-safe result accumulator" {
+    var result = BenchResult.init(std.testing.allocator);
+    defer result.deinit();
+
+    var shared = ThreadSafeResult{
+        .mutex = .{},
+        .result = &result,
+        .completed = 0,
+        .total = 3,
+    };
+
+    shared.recordSuccess(10.0, 200);
+    shared.recordSuccess(20.0, 200);
+    shared.recordFailure();
+
+    try std.testing.expectEqual(@as(usize, 3), result.total_requests);
+    try std.testing.expectEqual(@as(usize, 2), result.successful);
+    try std.testing.expectEqual(@as(usize, 1), result.failed);
+    try std.testing.expectEqual(@as(f64, 30.0), result.sum_ms);
+    try std.testing.expectEqual(@as(f64, 10.0), result.min_ms);
+    try std.testing.expectEqual(@as(f64, 20.0), result.max_ms);
+    try std.testing.expectEqual(@as(usize, 3), shared.completed);
 }

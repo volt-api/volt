@@ -26,14 +26,13 @@ pub const Method = enum {
     }
 
     pub fn fromString(s: []const u8) ?Method {
-        const upper = s;
-        if (mem.eql(u8, upper, "GET")) return .GET;
-        if (mem.eql(u8, upper, "POST")) return .POST;
-        if (mem.eql(u8, upper, "PUT")) return .PUT;
-        if (mem.eql(u8, upper, "PATCH")) return .PATCH;
-        if (mem.eql(u8, upper, "DELETE")) return .DELETE;
-        if (mem.eql(u8, upper, "HEAD")) return .HEAD;
-        if (mem.eql(u8, upper, "OPTIONS")) return .OPTIONS;
+        if (std.ascii.eqlIgnoreCase(s, "GET")) return .GET;
+        if (std.ascii.eqlIgnoreCase(s, "POST")) return .POST;
+        if (std.ascii.eqlIgnoreCase(s, "PUT")) return .PUT;
+        if (std.ascii.eqlIgnoreCase(s, "PATCH")) return .PATCH;
+        if (std.ascii.eqlIgnoreCase(s, "DELETE")) return .DELETE;
+        if (std.ascii.eqlIgnoreCase(s, "HEAD")) return .HEAD;
+        if (std.ascii.eqlIgnoreCase(s, "OPTIONS")) return .OPTIONS;
         return null;
     }
 };
@@ -73,6 +72,11 @@ pub const AuthType = enum {
     basic,
     api_key,
     digest,
+    aws,
+    hawk,
+    oauth_cc,
+    oauth_password,
+    oauth_implicit,
 
     pub fn toString(self: AuthType) []const u8 {
         return switch (self) {
@@ -81,6 +85,11 @@ pub const AuthType = enum {
             .basic => "basic",
             .api_key => "api_key",
             .digest => "digest",
+            .aws => "aws",
+            .hawk => "hawk",
+            .oauth_cc => "oauth_cc",
+            .oauth_password => "oauth_password",
+            .oauth_implicit => "oauth_implicit",
         };
     }
 
@@ -89,6 +98,11 @@ pub const AuthType = enum {
         if (mem.eql(u8, s, "basic")) return .basic;
         if (mem.eql(u8, s, "api_key")) return .api_key;
         if (mem.eql(u8, s, "digest")) return .digest;
+        if (mem.eql(u8, s, "aws")) return .aws;
+        if (mem.eql(u8, s, "hawk")) return .hawk;
+        if (mem.eql(u8, s, "oauth_cc")) return .oauth_cc;
+        if (mem.eql(u8, s, "oauth_password")) return .oauth_password;
+        if (mem.eql(u8, s, "oauth_implicit")) return .oauth_implicit;
         return .none;
     }
 };
@@ -106,6 +120,23 @@ pub const Auth = struct {
     key_name: ?[]const u8 = null,
     key_value: ?[]const u8 = null,
     key_location: ?[]const u8 = null, // "header" or "query"
+    // AWS SigV4 fields
+    access_key: ?[]const u8 = null,
+    secret_key: ?[]const u8 = null,
+    region: ?[]const u8 = null,
+    service: ?[]const u8 = null,
+    session_token: ?[]const u8 = null,
+    // Hawk auth fields
+    hawk_id: ?[]const u8 = null,
+    hawk_key: ?[]const u8 = null,
+    hawk_algorithm: ?[]const u8 = null,
+    hawk_ext: ?[]const u8 = null,
+    // OAuth fields (shared for oauth_cc, oauth_password, oauth_implicit)
+    client_id: ?[]const u8 = null,
+    client_secret: ?[]const u8 = null,
+    token_url: ?[]const u8 = null,
+    auth_url: ?[]const u8 = null,
+    scope: ?[]const u8 = null,
 };
 
 pub const TestAssertion = struct {
@@ -361,6 +392,34 @@ pub fn parse(allocator: Allocator, content: []const u8) ParseError!VoltRequest {
                 request.auth.key_value = extractValue(trimmed, "key_value:");
             } else if (mem.startsWith(u8, trimmed, "key_location:")) {
                 request.auth.key_location = extractValue(trimmed, "key_location:");
+            } else if (mem.startsWith(u8, trimmed, "access_key:")) {
+                request.auth.access_key = extractValue(trimmed, "access_key:");
+            } else if (mem.startsWith(u8, trimmed, "secret_key:")) {
+                request.auth.secret_key = extractValue(trimmed, "secret_key:");
+            } else if (mem.startsWith(u8, trimmed, "region:")) {
+                request.auth.region = extractValue(trimmed, "region:");
+            } else if (mem.startsWith(u8, trimmed, "service:")) {
+                request.auth.service = extractValue(trimmed, "service:");
+            } else if (mem.startsWith(u8, trimmed, "session_token:")) {
+                request.auth.session_token = extractValue(trimmed, "session_token:");
+            } else if (mem.startsWith(u8, trimmed, "hawk_id:")) {
+                request.auth.hawk_id = extractValue(trimmed, "hawk_id:");
+            } else if (mem.startsWith(u8, trimmed, "hawk_key:")) {
+                request.auth.hawk_key = extractValue(trimmed, "hawk_key:");
+            } else if (mem.startsWith(u8, trimmed, "hawk_algorithm:")) {
+                request.auth.hawk_algorithm = extractValue(trimmed, "hawk_algorithm:");
+            } else if (mem.startsWith(u8, trimmed, "hawk_ext:")) {
+                request.auth.hawk_ext = extractValue(trimmed, "hawk_ext:");
+            } else if (mem.startsWith(u8, trimmed, "client_id:")) {
+                request.auth.client_id = extractValue(trimmed, "client_id:");
+            } else if (mem.startsWith(u8, trimmed, "client_secret:")) {
+                request.auth.client_secret = extractValue(trimmed, "client_secret:");
+            } else if (mem.startsWith(u8, trimmed, "token_url:")) {
+                request.auth.token_url = extractValue(trimmed, "token_url:");
+            } else if (mem.startsWith(u8, trimmed, "auth_url:")) {
+                request.auth.auth_url = extractValue(trimmed, "auth_url:");
+            } else if (mem.startsWith(u8, trimmed, "scope:")) {
+                request.auth.scope = extractValue(trimmed, "scope:");
             }
         } else if (current_section == .tests and mem.startsWith(u8, trimmed, "- ")) {
             // Parse test: "- status equals 200" or "- $.field exists"
@@ -494,6 +553,48 @@ pub fn serialize(request: *const VoltRequest, allocator: Allocator) ![]const u8 
         }
         if (request.auth.key_location) |key_location| {
             try writer.print("  key_location: {s}\n", .{key_location});
+        }
+        if (request.auth.access_key) |v| {
+            try writer.print("  access_key: {s}\n", .{v});
+        }
+        if (request.auth.secret_key) |v| {
+            try writer.print("  secret_key: {s}\n", .{v});
+        }
+        if (request.auth.region) |v| {
+            try writer.print("  region: {s}\n", .{v});
+        }
+        if (request.auth.service) |v| {
+            try writer.print("  service: {s}\n", .{v});
+        }
+        if (request.auth.session_token) |v| {
+            try writer.print("  session_token: {s}\n", .{v});
+        }
+        if (request.auth.hawk_id) |v| {
+            try writer.print("  hawk_id: {s}\n", .{v});
+        }
+        if (request.auth.hawk_key) |v| {
+            try writer.print("  hawk_key: {s}\n", .{v});
+        }
+        if (request.auth.hawk_algorithm) |v| {
+            try writer.print("  hawk_algorithm: {s}\n", .{v});
+        }
+        if (request.auth.hawk_ext) |v| {
+            try writer.print("  hawk_ext: {s}\n", .{v});
+        }
+        if (request.auth.client_id) |v| {
+            try writer.print("  client_id: {s}\n", .{v});
+        }
+        if (request.auth.client_secret) |v| {
+            try writer.print("  client_secret: {s}\n", .{v});
+        }
+        if (request.auth.token_url) |v| {
+            try writer.print("  token_url: {s}\n", .{v});
+        }
+        if (request.auth.auth_url) |v| {
+            try writer.print("  auth_url: {s}\n", .{v});
+        }
+        if (request.auth.scope) |v| {
+            try writer.print("  scope: {s}\n", .{v});
         }
     }
 
@@ -659,4 +760,80 @@ test "serialize and roundtrip" {
     try std.testing.expect(mem.indexOf(u8, output, "method: POST") != null);
     try std.testing.expect(mem.indexOf(u8, output, "url: https://api.example.com/users") != null);
     try std.testing.expect(mem.indexOf(u8, output, "Content-Type: application/json") != null);
+}
+
+test "parse .volt file with aws auth" {
+    const content =
+        \\method: GET
+        \\url: https://s3.amazonaws.com/bucket/key
+        \\auth:
+        \\  type: aws
+        \\  access_key: AKIAIOSFODNN7EXAMPLE
+        \\  secret_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+        \\  region: us-east-1
+        \\  service: s3
+    ;
+    var request = try parse(std.testing.allocator, content);
+    defer request.deinit();
+
+    try std.testing.expectEqual(AuthType.aws, request.auth.type);
+    try std.testing.expectEqualStrings("AKIAIOSFODNN7EXAMPLE", request.auth.access_key.?);
+    try std.testing.expectEqualStrings("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", request.auth.secret_key.?);
+    try std.testing.expectEqualStrings("us-east-1", request.auth.region.?);
+    try std.testing.expectEqualStrings("s3", request.auth.service.?);
+}
+
+test "parse .volt file with hawk auth" {
+    const content =
+        \\method: GET
+        \\url: https://api.example.com/resource
+        \\auth:
+        \\  type: hawk
+        \\  hawk_id: dh37fgj492je
+        \\  hawk_key: werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn
+        \\  hawk_algorithm: sha256
+        \\  hawk_ext: some-app-data
+    ;
+    var request = try parse(std.testing.allocator, content);
+    defer request.deinit();
+
+    try std.testing.expectEqual(AuthType.hawk, request.auth.type);
+    try std.testing.expectEqualStrings("dh37fgj492je", request.auth.hawk_id.?);
+    try std.testing.expectEqualStrings("werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", request.auth.hawk_key.?);
+    try std.testing.expectEqualStrings("sha256", request.auth.hawk_algorithm.?);
+    try std.testing.expectEqualStrings("some-app-data", request.auth.hawk_ext.?);
+}
+
+test "parse .volt file with oauth_cc auth" {
+    const content =
+        \\method: POST
+        \\url: https://api.example.com/data
+        \\auth:
+        \\  type: oauth_cc
+        \\  client_id: my-app
+        \\  client_secret: my-secret
+        \\  token_url: https://auth.example.com/token
+        \\  scope: read write
+    ;
+    var request = try parse(std.testing.allocator, content);
+    defer request.deinit();
+
+    try std.testing.expectEqual(AuthType.oauth_cc, request.auth.type);
+    try std.testing.expectEqualStrings("my-app", request.auth.client_id.?);
+    try std.testing.expectEqualStrings("my-secret", request.auth.client_secret.?);
+    try std.testing.expectEqualStrings("https://auth.example.com/token", request.auth.token_url.?);
+    try std.testing.expectEqualStrings("read write", request.auth.scope.?);
+}
+
+test "new auth type toString roundtrip" {
+    try std.testing.expectEqualStrings("aws", AuthType.aws.toString());
+    try std.testing.expectEqualStrings("hawk", AuthType.hawk.toString());
+    try std.testing.expectEqualStrings("oauth_cc", AuthType.oauth_cc.toString());
+    try std.testing.expectEqualStrings("oauth_password", AuthType.oauth_password.toString());
+    try std.testing.expectEqualStrings("oauth_implicit", AuthType.oauth_implicit.toString());
+    try std.testing.expect(AuthType.fromString("aws") == .aws);
+    try std.testing.expect(AuthType.fromString("hawk") == .hawk);
+    try std.testing.expect(AuthType.fromString("oauth_cc") == .oauth_cc);
+    try std.testing.expect(AuthType.fromString("oauth_password") == .oauth_password);
+    try std.testing.expect(AuthType.fromString("oauth_implicit") == .oauth_implicit);
 }

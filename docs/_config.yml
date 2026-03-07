@@ -1,0 +1,13 @@
+title: Volt Documentation
+description: The API client that respects you
+theme: minima
+baseurl: "/VOLT"
+url: "https://volt-api.github.io"
+markdown: kramdown
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock

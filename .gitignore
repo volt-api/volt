@@ -2,6 +2,9 @@
 zig-out/
 .zig-cache/
 
+# Local toolchains
+.tools/
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -13,6 +16,9 @@ desktop.ini
 *~
 .vscode/
 .idea/
+
+# Session data (local, per-user)
+.volt-sessions/
 
 # Secrets / local env overrides
 *_env.local.volt

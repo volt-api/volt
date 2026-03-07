@@ -16,6 +16,30 @@ const Allocator = mem.Allocator;
 //   verify_ssl: true
 //   output_format: pretty  (pretty|compact|raw)
 
+pub const SslVersion = enum {
+    tls1_0,
+    tls1_1,
+    tls1_2,
+    tls1_3,
+
+    pub fn fromString(s: []const u8) ?SslVersion {
+        if (mem.eql(u8, s, "tls1.0")) return .tls1_0;
+        if (mem.eql(u8, s, "tls1.1")) return .tls1_1;
+        if (mem.eql(u8, s, "tls1.2")) return .tls1_2;
+        if (mem.eql(u8, s, "tls1.3")) return .tls1_3;
+        return null;
+    }
+
+    pub fn toString(self: SslVersion) []const u8 {
+        return switch (self) {
+            .tls1_0 => "TLS 1.0",
+            .tls1_1 => "TLS 1.1",
+            .tls1_2 => "TLS 1.2",
+            .tls1_3 => "TLS 1.3",
+        };
+    }
+};
+
 pub const VoltConfig = struct {
     allocator: Allocator,
     base_url: ?[]const u8 = null,
@@ -29,6 +53,14 @@ pub const VoltConfig = struct {
     verify_ssl: bool = true,
     output_format: OutputFormat = .pretty,
     color: bool = true,
+    // TLS / cert fields
+    client_cert: ?[]const u8 = null,
+    client_key: ?[]const u8 = null,
+    ca_bundle: ?[]const u8 = null,
+    ssl_version: ?SslVersion = null,
+    ciphers: ?[]const u8 = null,
+    // Session
+    session: ?[]const u8 = null,
     /// Retains the raw file content so string slices remain valid
     _content: ?[]const u8 = null,
 
@@ -124,7 +156,11 @@ fn parseConfig(config: *VoltConfig, content: []const u8) !void {
             if (mem.eql(u8, key, "base_url")) {
                 config.base_url = value;
             } else if (mem.eql(u8, key, "timeout")) {
-                config.timeout_ms = std.fmt.parseInt(u32, value, 10) catch 30_000;
+                config.timeout_ms = std.fmt.parseInt(u32, value, 10) catch blk: {
+                    const stderr = std.io.getStdErr().writer();
+                    stderr.print("Warning: invalid timeout value '{s}', using default 30000ms\n", .{value}) catch {};
+                    break :blk 30_000;
+                };
             } else if (mem.eql(u8, key, "environment")) {
                 config.environment = value;
             } else if (mem.eql(u8, key, "proxy")) {
@@ -134,13 +170,29 @@ fn parseConfig(config: *VoltConfig, content: []const u8) !void {
             } else if (mem.eql(u8, key, "follow_redirects")) {
                 config.follow_redirects = mem.eql(u8, value, "true");
             } else if (mem.eql(u8, key, "max_redirects")) {
-                config.max_redirects = std.fmt.parseInt(u8, value, 10) catch 10;
+                config.max_redirects = std.fmt.parseInt(u8, value, 10) catch blk: {
+                    const stderr = std.io.getStdErr().writer();
+                    stderr.print("Warning: invalid max_redirects value '{s}', using default 10\n", .{value}) catch {};
+                    break :blk 10;
+                };
             } else if (mem.eql(u8, key, "verify_ssl")) {
                 config.verify_ssl = mem.eql(u8, value, "true");
             } else if (mem.eql(u8, key, "output")) {
                 config.output_format = OutputFormat.fromString(value);
             } else if (mem.eql(u8, key, "color")) {
                 config.color = mem.eql(u8, value, "true");
+            } else if (mem.eql(u8, key, "client_cert")) {
+                config.client_cert = value;
+            } else if (mem.eql(u8, key, "client_key")) {
+                config.client_key = value;
+            } else if (mem.eql(u8, key, "ca_bundle")) {
+                config.ca_bundle = value;
+            } else if (mem.eql(u8, key, "ssl_version") or mem.eql(u8, key, "ssl")) {
+                config.ssl_version = SslVersion.fromString(value);
+            } else if (mem.eql(u8, key, "ciphers")) {
+                config.ciphers = value;
+            } else if (mem.eql(u8, key, "session")) {
+                config.session = value;
             }
         }
     }
@@ -162,7 +214,7 @@ pub fn generateDefaultConfig(allocator: Allocator) ![]const u8 {
     try writer.writeAll("# Default headers applied to all requests\n");
     try writer.writeAll("headers:\n");
     try writer.writeAll("  - Accept: application/json\n");
-    try writer.writeAll("  - User-Agent: Volt/1.0.0\n\n");
+    try writer.writeAll("  - User-Agent: Volt/1.1.0\n\n");
     try writer.writeAll("# Output format: pretty | compact | raw\n");
     try writer.writeAll("output: pretty\n\n");
     try writer.writeAll("# Enable colored output\n");

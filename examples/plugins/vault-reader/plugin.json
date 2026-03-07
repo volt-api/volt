@@ -1,0 +1,7 @@
+{
+  "name": "vault-reader",
+  "version": "1.0.0",
+  "description": "Read secrets from HashiCorp Vault",
+  "hooks": ["variable_provider"],
+  "entrypoint": "vault-reader.sh"
+}

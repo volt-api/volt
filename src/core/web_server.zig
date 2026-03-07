@@ -18,6 +18,8 @@ const WebApi = @import("web_api.zig");
 const index_html = @embedFile("web/index.html");
 const style_css = @embedFile("web/style.css");
 const app_js = @embedFile("web/app.js");
+const manifest_json = @embedFile("web/manifest.json");
+const sw_js = @embedFile("web/sw.js");
 
 pub const WebServer = struct {
     allocator: Allocator,
@@ -108,6 +110,14 @@ pub const WebServer = struct {
             try self.sendStatic(&request, app_js, "application/javascript; charset=utf-8");
             return;
         }
+        if (mem.eql(u8, path, "/manifest.json")) {
+            try self.sendStatic(&request, manifest_json, "application/manifest+json; charset=utf-8");
+            return;
+        }
+        if (mem.eql(u8, path, "/sw.js")) {
+            try self.sendStatic(&request, sw_js, "application/javascript; charset=utf-8");
+            return;
+        }
         if (mem.eql(u8, path, "/favicon.ico")) {
             request.respond("", .{
                 .status = .no_content,
@@ -148,7 +158,14 @@ pub const WebServer = struct {
                         };
                         const n = reader.readAll(b) catch 0;
                         if (n > 0) {
-                            body = b[0..n];
+                            // Free the full allocation and dupe only the bytes read,
+                            // so the defer free on body frees the correct size.
+                            const trimmed = self.allocator.dupe(u8, b[0..n]) catch {
+                                self.allocator.free(b);
+                                return;
+                            };
+                            self.allocator.free(b);
+                            body = trimmed;
                         } else {
                             self.allocator.free(b);
                         }

@@ -1,0 +1,7 @@
+{
+  "name": "aws-sts",
+  "version": "1.0.0",
+  "description": "AWS STS temporary credentials via assume-role",
+  "hooks": ["auth_provider", "variable_provider"],
+  "entrypoint": "aws-sts.sh"
+}

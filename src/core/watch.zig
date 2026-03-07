@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
@@ -42,6 +43,198 @@ pub const WatchState = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.last_modified.deinit();
+    }
+};
+
+// ── OS-Native File Watching ──────────────────────────────────────────
+
+/// Returns true on platforms where native file watching (inotify) is available.
+pub fn supportsNativeWatch() bool {
+    return builtin.os.tag == .linux;
+}
+
+/// NativeWatcher wraps platform-specific file watching mechanisms.
+/// On Linux it uses inotify for efficient kernel-level notifications.
+/// On all other platforms it falls back to polling via `hasChanges()` + sleep.
+pub const NativeWatcher = struct {
+    allocator: Allocator,
+    watch_paths: std.ArrayList([]const u8),
+    use_native: bool,
+    // For Linux inotify
+    inotify_fd: ?i32 = null,
+    // For polling fallback
+    poll_state: ?WatchState = null,
+
+    pub fn init(allocator: Allocator) NativeWatcher {
+        var watcher = NativeWatcher{
+            .allocator = allocator,
+            .watch_paths = std.ArrayList([]const u8).init(allocator),
+            .use_native = false,
+            .inotify_fd = null,
+            .poll_state = null,
+        };
+
+        if (comptime builtin.os.tag == .linux) {
+            // Attempt to initialise inotify; fall back to polling on failure
+            const fd = std.os.linux.inotify_init1(0);
+            const signed: i32 = @bitCast(@as(u32, @truncate(fd)));
+            if (signed >= 0) {
+                watcher.inotify_fd = signed;
+                watcher.use_native = true;
+            } else {
+                watcher.poll_state = WatchState.init(allocator);
+            }
+        } else {
+            // Non-Linux: always use polling fallback
+            watcher.poll_state = WatchState.init(allocator);
+        }
+
+        return watcher;
+    }
+
+    pub fn deinit(self: *NativeWatcher) void {
+        if (comptime builtin.os.tag == .linux) {
+            if (self.inotify_fd) |fd| {
+                std.posix.close(fd);
+                self.inotify_fd = null;
+            }
+        }
+
+        if (self.poll_state) |*ps| {
+            ps.deinit();
+            self.poll_state = null;
+        }
+
+        for (self.watch_paths.items) |p| {
+            self.allocator.free(p);
+        }
+        self.watch_paths.deinit();
+    }
+
+    /// Register a directory path to watch for .volt file changes.
+    pub fn addPath(self: *NativeWatcher, path: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned);
+
+        if (comptime builtin.os.tag == .linux) {
+            if (self.inotify_fd) |fd| {
+                // Watch for modifications, creates, and moves in the directory.
+                const flags = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.MOVED_TO;
+                const wd = std.os.linux.inotify_add_watch(fd, path, flags);
+                const signed_wd: i32 = @bitCast(@as(u32, @truncate(wd)));
+                if (signed_wd < 0) {
+                    // If adding this specific watch fails, we still keep the
+                    // path for a potential polling fallback but don't error out.
+                }
+            }
+        }
+
+        try self.watch_paths.append(owned);
+    }
+
+    /// Block until a .volt file changes (or until `timeout_ms` elapses).
+    /// Returns the path of the first changed file, or null on timeout.
+    /// The caller does NOT own the returned slice.
+    pub fn waitForChange(self: *NativeWatcher, timeout_ms: u32) !?[]const u8 {
+        if (comptime builtin.os.tag == .linux) {
+            if (self.use_native and self.inotify_fd != null) {
+                return self.waitInotify(timeout_ms);
+            }
+        }
+        // Polling fallback
+        return self.waitPolling(timeout_ms);
+    }
+
+    // ── Linux inotify path ──────────────────────────────────────────
+
+    fn waitInotify(self: *NativeWatcher, timeout_ms: u32) !?[]const u8 {
+        if (comptime builtin.os.tag != .linux) {
+            // Unreachable on non-Linux, but keeps the compiler happy.
+            return self.waitPolling(timeout_ms);
+        } else {
+            const fd = self.inotify_fd orelse return self.waitPolling(timeout_ms);
+
+            var pfd = [1]std.posix.pollfd{.{
+                .fd = fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            }};
+
+            const ret = std.posix.poll(&pfd, @intCast(timeout_ms)) catch {
+                return self.waitPolling(timeout_ms);
+            };
+
+            if (ret == 0) return null; // timeout
+
+            // Drain the inotify buffer and look for .volt files
+            var buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
+            const bytes_read = std.posix.read(fd, &buf) catch {
+                return self.waitPolling(timeout_ms);
+            };
+
+            if (bytes_read <= 0) return null;
+
+            var offset: usize = 0;
+            while (offset < bytes_read) {
+                const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(buf[offset..].ptr));
+                const name_len = event.len;
+                if (name_len > 0) {
+                    const name_bytes = buf[offset + @sizeOf(std.os.linux.inotify_event) ..][0..name_len];
+                    // name is null-terminated inside the buffer
+                    const name = mem.sliceTo(name_bytes, 0);
+                    if (mem.endsWith(u8, name, ".volt")) {
+                        // Return the first matching watch path as context
+                        if (self.watch_paths.items.len > 0) {
+                            return self.watch_paths.items[0];
+                        }
+                    }
+                }
+                offset += @sizeOf(std.os.linux.inotify_event) + name_len;
+            }
+
+            return null;
+        }
+    }
+
+    // ── Polling fallback ────────────────────────────────────────────
+
+    fn waitPolling(self: *NativeWatcher, timeout_ms: u32) !?[]const u8 {
+        const state = &(self.poll_state orelse return null);
+
+        var files = try scanFiles(self.allocator, self.watch_paths.items);
+        defer {
+            for (files.items) |item| {
+                self.allocator.free(item);
+            }
+            files.deinit();
+        }
+
+        if (hasChanges(self.allocator, state, files.items)) {
+            if (self.watch_paths.items.len > 0) {
+                return self.watch_paths.items[0];
+            }
+            return null;
+        }
+
+        // Sleep for the requested interval, then re-check once
+        const sleep_ns = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        std.time.sleep(sleep_ns);
+
+        var files2 = try scanFiles(self.allocator, self.watch_paths.items);
+        defer {
+            for (files2.items) |item| {
+                self.allocator.free(item);
+            }
+            files2.deinit();
+        }
+
+        if (hasChanges(self.allocator, state, files2.items)) {
+            if (self.watch_paths.items.len > 0) {
+                return self.watch_paths.items[0];
+            }
+        }
+
+        return null;
     }
 };
 
@@ -260,4 +453,75 @@ test "scanFiles returns empty for nonexistent directory" {
 test "getModTime returns null for nonexistent file" {
     const result = getModTime("this_file_does_not_exist_at_all.volt");
     try std.testing.expect(result == null);
+}
+
+test "NativeWatcher init and deinit" {
+    var watcher = NativeWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    // On Linux with inotify available, use_native should be true.
+    // On other platforms, it should fall back to polling.
+    if (comptime builtin.os.tag == .linux) {
+        // inotify may or may not succeed in a test sandbox, so
+        // just verify internal consistency.
+        if (watcher.use_native) {
+            try std.testing.expect(watcher.inotify_fd != null);
+            try std.testing.expect(watcher.poll_state == null);
+        } else {
+            try std.testing.expect(watcher.inotify_fd == null);
+            try std.testing.expect(watcher.poll_state != null);
+        }
+    } else {
+        try std.testing.expect(!watcher.use_native);
+        try std.testing.expect(watcher.inotify_fd == null);
+        try std.testing.expect(watcher.poll_state != null);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), watcher.watch_paths.items.len);
+}
+
+test "supportsNativeWatch returns expected value" {
+    const expected = builtin.os.tag == .linux;
+    try std.testing.expectEqual(expected, supportsNativeWatch());
+}
+
+test "NativeWatcher falls back to polling" {
+    // On non-Linux platforms (or when inotify is unavailable) the watcher
+    // must initialise a poll_state for the polling fallback path.
+    var watcher = NativeWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    if (comptime builtin.os.tag != .linux) {
+        // Must be in polling mode
+        try std.testing.expect(!watcher.use_native);
+        try std.testing.expect(watcher.poll_state != null);
+
+        // addPath should work in polling mode
+        try watcher.addPath("nonexistent_test_dir");
+        try std.testing.expectEqual(@as(usize, 1), watcher.watch_paths.items.len);
+
+        // waitForChange should return null (no real files to detect)
+        const result = try watcher.waitForChange(0);
+        try std.testing.expect(result == null);
+    } else {
+        // On Linux, force polling by simulating inotify failure:
+        // Close inotify fd if present and switch to polling.
+        if (watcher.inotify_fd) |fd| {
+            std.posix.close(fd);
+            watcher.inotify_fd = null;
+        }
+        watcher.use_native = false;
+        if (watcher.poll_state == null) {
+            watcher.poll_state = WatchState.init(std.testing.allocator);
+        }
+
+        try std.testing.expect(!watcher.use_native);
+        try std.testing.expect(watcher.poll_state != null);
+
+        try watcher.addPath("nonexistent_test_dir");
+        try std.testing.expectEqual(@as(usize, 1), watcher.watch_paths.items.len);
+
+        const result = try watcher.waitForChange(0);
+        try std.testing.expect(result == null);
+    }
 }

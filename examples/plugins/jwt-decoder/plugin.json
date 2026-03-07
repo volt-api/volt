@@ -1,0 +1,7 @@
+{
+  "name": "jwt-decoder",
+  "version": "1.0.0",
+  "description": "Decode and inspect JWTs in API responses",
+  "hooks": ["post_response"],
+  "entrypoint": "jwt-decoder.sh"
+}

@@ -634,7 +634,307 @@ pub fn formatFrameInfo(allocator: Allocator, frame_type: FrameType, stream_id: u
     return buf.toOwnedSlice();
 }
 
+// ── TLS ALPN Negotiation (RFC 7301) ──────────────────────────────────
+//
+// Application-Layer Protocol Negotiation extension for TLS.
+// Enables HTTP/2 over TLS by advertising "h2" during the TLS handshake.
+
+pub const AlpnProtocol = enum {
+    h2,
+    http_1_1,
+
+    pub fn toBytes(self: AlpnProtocol) []const u8 {
+        return switch (self) {
+            .h2 => "h2",
+            .http_1_1 => "http/1.1",
+        };
+    }
+
+    pub fn fromBytes(data: []const u8) ?AlpnProtocol {
+        if (mem.eql(u8, data, "h2")) return .h2;
+        if (mem.eql(u8, data, "http/1.1")) return .http_1_1;
+        return null;
+    }
+};
+
+pub const TlsAlpnConfig = struct {
+    protocols: [2]AlpnProtocol = .{ .h2, .http_1_1 },
+    protocol_count: u8 = 2,
+
+    /// Create config preferring HTTP/2
+    pub fn preferH2() TlsAlpnConfig {
+        return .{
+            .protocols = .{ .h2, .http_1_1 },
+            .protocol_count = 2,
+        };
+    }
+
+    /// Create config for HTTP/2 only
+    pub fn h2Only() TlsAlpnConfig {
+        return .{
+            .protocols = .{ .h2, .h2 },
+            .protocol_count = 1,
+        };
+    }
+
+    /// Create config for HTTP/1.1 only
+    pub fn http11Only() TlsAlpnConfig {
+        return .{
+            .protocols = .{ .http_1_1, .http_1_1 },
+            .protocol_count = 1,
+        };
+    }
+};
+
+/// Build the TLS ALPN extension payload.
+/// Format per RFC 7301 Section 3.1:
+///   2 bytes: ProtocolNameList length
+///   For each protocol:
+///     1 byte:  protocol name length
+///     N bytes: protocol name (e.g. "h2", "http/1.1")
+///
+/// Caller owns the returned slice.
+pub fn buildAlpnExtension(allocator: Allocator, config: TlsAlpnConfig) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+
+    // Build protocol list first to compute total length
+    var proto_buf = std.ArrayList(u8).init(allocator);
+    defer proto_buf.deinit();
+
+    var i: u8 = 0;
+    while (i < config.protocol_count) : (i += 1) {
+        const proto_bytes = config.protocols[i].toBytes();
+        try proto_buf.append(@intCast(proto_bytes.len));
+        try proto_buf.appendSlice(proto_bytes);
+    }
+
+    // ProtocolNameList length (2 bytes, big-endian)
+    const list_len: u16 = @intCast(proto_buf.items.len);
+    try buf.append(@intCast((list_len >> 8) & 0xFF));
+    try buf.append(@intCast(list_len & 0xFF));
+    try buf.appendSlice(proto_buf.items);
+
+    return buf.toOwnedSlice();
+}
+
+/// Parse a TLS ALPN extension response to determine the server's selected protocol.
+/// The server responds with a single protocol from our offered list.
+/// Format: 2 bytes list length, 1 byte name length, N bytes name.
+pub fn parseAlpnResponse(data: []const u8) ?AlpnProtocol {
+    if (data.len < 4) return null; // minimum: 2 (list len) + 1 (name len) + 1 (name)
+
+    const list_len: u16 = (@as(u16, data[0]) << 8) | @as(u16, data[1]);
+    if (data.len < 2 + list_len) return null;
+
+    const name_len = data[2];
+    if (data.len < 3 + name_len) return null;
+
+    return AlpnProtocol.fromBytes(data[3 .. 3 + name_len]);
+}
+
+/// Result of ALPN negotiation
+pub const AlpnResult = struct {
+    selected: AlpnProtocol,
+    is_h2: bool,
+};
+
+/// Determine the negotiated protocol from a server ALPN response.
+/// Returns null if negotiation failed or protocol is unknown.
+pub fn negotiateAlpn(server_response: []const u8) ?AlpnResult {
+    const selected = parseAlpnResponse(server_response) orelse return null;
+    return AlpnResult{
+        .selected = selected,
+        .is_h2 = selected == .h2,
+    };
+}
+
+// ── HTTP/2 Cleartext Upgrade (h2c) ──────────────────────────────────
+//
+// For upgrading HTTP/1.1 connections to HTTP/2 without TLS (RFC 7540 Section 3.2).
+
+/// Build an HTTP/1.1 request with the h2c upgrade headers.
+/// The Upgrade header and HTTP2-Settings header trigger the server to switch to HTTP/2.
+/// Caller owns the returned slice.
+pub fn buildH2cUpgradeRequest(allocator: Allocator, method: []const u8, path: []const u8, host: []const u8, settings: Settings) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    const writer = buf.writer();
+
+    // Build the settings payload for HTTP2-Settings header (base64url-encoded)
+    const settings_frame = try buildSettingsFrame(allocator, settings);
+    defer allocator.free(settings_frame);
+
+    // Skip the 9-byte frame header — encode only the payload
+    const settings_payload = if (settings_frame.len > 9) settings_frame[9..] else settings_frame[0..0];
+
+    // Base64url-encode the settings payload
+    var b64_buf: [256]u8 = undefined;
+    const b64_len = std.base64.url_safe_no_pad.Encoder.calcSize(settings_payload.len);
+    if (b64_len > b64_buf.len) return error.OutOfMemory;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(b64_buf[0..b64_len], settings_payload);
+
+    try writer.print("{s} {s} HTTP/1.1\r\n", .{ method, path });
+    try writer.print("Host: {s}\r\n", .{host});
+    try writer.writeAll("Connection: Upgrade, HTTP2-Settings\r\n");
+    try writer.writeAll("Upgrade: h2c\r\n");
+    try writer.print("HTTP2-Settings: {s}\r\n", .{encoded});
+    try writer.writeAll("\r\n");
+
+    return buf.toOwnedSlice();
+}
+
+/// Check if an HTTP/1.1 response indicates a successful h2c upgrade.
+/// Returns true if the server responded with "101 Switching Protocols".
+pub fn isH2cUpgradeAccepted(response: []const u8) bool {
+    return mem.startsWith(u8, response, "HTTP/1.1 101") and
+        containsHeaderValue(response, "Upgrade", "h2c");
+}
+
+/// Check if a header with the given name has the given value (case-insensitive).
+fn containsHeaderValue(response: []const u8, header_name: []const u8, expected_value: []const u8) bool {
+    var lines = mem.splitSequence(u8, response, "\r\n");
+    while (lines.next()) |line| {
+        if (line.len == 0) break; // end of headers
+        if (mem.indexOf(u8, line, ": ")) |colon| {
+            const name = line[0..colon];
+            const value = mem.trim(u8, line[colon + 2 ..], " \t");
+            if (caseInsensitiveEql(name, header_name) and caseInsensitiveEql(value, expected_value)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn caseInsensitiveEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
+    }
+    return true;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
+
+test "ALPN protocol toBytes and fromBytes roundtrip" {
+    try std.testing.expectEqualStrings("h2", AlpnProtocol.h2.toBytes());
+    try std.testing.expectEqualStrings("http/1.1", AlpnProtocol.http_1_1.toBytes());
+
+    try std.testing.expectEqual(AlpnProtocol.h2, AlpnProtocol.fromBytes("h2").?);
+    try std.testing.expectEqual(AlpnProtocol.http_1_1, AlpnProtocol.fromBytes("http/1.1").?);
+    try std.testing.expect(AlpnProtocol.fromBytes("spdy/3") == null);
+}
+
+test "build ALPN extension with h2 preference" {
+    const allocator = std.testing.allocator;
+    const config = TlsAlpnConfig.preferH2();
+
+    const extension = try buildAlpnExtension(allocator, config);
+    defer allocator.free(extension);
+
+    // Should start with 2-byte length
+    const list_len = (@as(u16, extension[0]) << 8) | @as(u16, extension[1]);
+    try std.testing.expectEqual(@as(u16, @intCast(extension.len - 2)), list_len);
+
+    // First protocol: h2 (length 2)
+    try std.testing.expectEqual(@as(u8, 2), extension[2]);
+    try std.testing.expectEqualStrings("h2", extension[3..5]);
+
+    // Second protocol: http/1.1 (length 8)
+    try std.testing.expectEqual(@as(u8, 8), extension[5]);
+    try std.testing.expectEqualStrings("http/1.1", extension[6..14]);
+}
+
+test "build ALPN extension h2 only" {
+    const allocator = std.testing.allocator;
+    const config = TlsAlpnConfig.h2Only();
+
+    const extension = try buildAlpnExtension(allocator, config);
+    defer allocator.free(extension);
+
+    // Should contain only h2
+    const list_len = (@as(u16, extension[0]) << 8) | @as(u16, extension[1]);
+    try std.testing.expectEqual(@as(u16, 3), list_len); // 1 + 2 bytes for "h2"
+    try std.testing.expectEqual(@as(u8, 2), extension[2]);
+    try std.testing.expectEqualStrings("h2", extension[3..5]);
+}
+
+test "parse ALPN response h2" {
+    // Server selected h2: list_len=3, name_len=2, "h2"
+    const response = [_]u8{ 0x00, 0x03, 0x02, 'h', '2' };
+    const result = parseAlpnResponse(&response);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(AlpnProtocol.h2, result.?);
+}
+
+test "parse ALPN response http/1.1" {
+    // Server selected http/1.1: list_len=9, name_len=8, "http/1.1"
+    const response = [_]u8{ 0x00, 0x09, 0x08, 'h', 't', 't', 'p', '/', '1', '.', '1' };
+    const result = parseAlpnResponse(&response);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(AlpnProtocol.http_1_1, result.?);
+}
+
+test "parse ALPN response too short" {
+    const response = [_]u8{ 0x00, 0x01 };
+    try std.testing.expect(parseAlpnResponse(&response) == null);
+}
+
+test "negotiate ALPN h2" {
+    const response = [_]u8{ 0x00, 0x03, 0x02, 'h', '2' };
+    const result = negotiateAlpn(&response);
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.is_h2);
+    try std.testing.expectEqual(AlpnProtocol.h2, result.?.selected);
+}
+
+test "negotiate ALPN http/1.1" {
+    const response = [_]u8{ 0x00, 0x09, 0x08, 'h', 't', 't', 'p', '/', '1', '.', '1' };
+    const result = negotiateAlpn(&response);
+    try std.testing.expect(result != null);
+    try std.testing.expect(!result.?.is_h2);
+}
+
+test "h2c upgrade request building" {
+    const allocator = std.testing.allocator;
+    const settings = Settings{};
+
+    const request = try buildH2cUpgradeRequest(allocator, "GET", "/", "example.com", settings);
+    defer allocator.free(request);
+
+    try std.testing.expect(mem.indexOf(u8, request, "GET / HTTP/1.1\r\n") != null);
+    try std.testing.expect(mem.indexOf(u8, request, "Host: example.com\r\n") != null);
+    try std.testing.expect(mem.indexOf(u8, request, "Upgrade: h2c\r\n") != null);
+    try std.testing.expect(mem.indexOf(u8, request, "Connection: Upgrade, HTTP2-Settings\r\n") != null);
+    try std.testing.expect(mem.indexOf(u8, request, "HTTP2-Settings: ") != null);
+}
+
+test "h2c upgrade acceptance detection" {
+    const accepted = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n";
+    try std.testing.expect(isH2cUpgradeAccepted(accepted));
+
+    const rejected = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+    try std.testing.expect(!isH2cUpgradeAccepted(rejected));
+
+    const wrong_upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+    try std.testing.expect(!isH2cUpgradeAccepted(wrong_upgrade));
+}
+
+test "TlsAlpnConfig presets" {
+    const prefer = TlsAlpnConfig.preferH2();
+    try std.testing.expectEqual(@as(u8, 2), prefer.protocol_count);
+    try std.testing.expectEqual(AlpnProtocol.h2, prefer.protocols[0]);
+    try std.testing.expectEqual(AlpnProtocol.http_1_1, prefer.protocols[1]);
+
+    const h2 = TlsAlpnConfig.h2Only();
+    try std.testing.expectEqual(@as(u8, 1), h2.protocol_count);
+    try std.testing.expectEqual(AlpnProtocol.h2, h2.protocols[0]);
+
+    const h11 = TlsAlpnConfig.http11Only();
+    try std.testing.expectEqual(@as(u8, 1), h11.protocol_count);
+    try std.testing.expectEqual(AlpnProtocol.http_1_1, h11.protocols[0]);
+}
 
 test "frame header build and parse roundtrip" {
     const header = buildFrameHeader(42, .headers, Flags.END_HEADERS | Flags.END_STREAM, 7);

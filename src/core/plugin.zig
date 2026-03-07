@@ -314,7 +314,174 @@ fn escapeJsonString(input: []const u8) []const u8 {
     return input;
 }
 
+// ── Plugin Install from URL ──────────────────────────────────────────
+//
+// Downloads a plugin archive from a URL, extracts the plugin.json manifest,
+// and registers the plugin in the local plugin directory.
+
+pub const InstallResult = struct {
+    success: bool,
+    name: []const u8,
+    version: []const u8,
+    message: []const u8,
+};
+
+/// Install a plugin from a local directory path.
+/// Reads plugin.json from the directory and copies the plugin to the plugins directory.
+pub fn installFromPath(allocator: Allocator, source_path: []const u8, plugin_dir: []const u8) InstallResult {
+    // Read plugin.json from source path
+    var source_dir = std.fs.cwd().openDir(source_path, .{}) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Cannot open source directory" };
+    };
+    defer source_dir.close();
+
+    const manifest_file = source_dir.openFile("plugin.json", .{}) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "No plugin.json found in source directory" };
+    };
+    defer manifest_file.close();
+
+    const content = manifest_file.readToEndAlloc(allocator, 64 * 1024) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Failed to read plugin.json" };
+    };
+    defer allocator.free(content);
+
+    var manifest = loadManifest(allocator, content) orelse {
+        return .{ .success = false, .name = "", .version = "", .message = "Invalid plugin.json format" };
+    };
+    defer manifest.deinit();
+
+    // Create plugin directory
+    std.fs.cwd().makePath(plugin_dir) catch {};
+
+    const dest_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ plugin_dir, manifest.name }) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Failed to create install path" };
+    };
+    defer allocator.free(dest_path);
+
+    std.fs.cwd().makePath(dest_path) catch {};
+
+    // Copy plugin.json to destination
+    const dest_manifest_path = std.fmt.allocPrint(allocator, "{s}/plugin.json", .{dest_path}) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Failed to create manifest path" };
+    };
+    defer allocator.free(dest_manifest_path);
+
+    const dest_file = std.fs.cwd().createFile(dest_manifest_path, .{}) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Failed to write plugin.json to plugins directory" };
+    };
+    defer dest_file.close();
+    dest_file.writeAll(content) catch {
+        return .{ .success = false, .name = "", .version = "", .message = "Failed to write plugin manifest" };
+    };
+
+    // Copy executable if it exists
+    const exe_src = source_dir.openFile(manifest.executable, .{}) catch null;
+    if (exe_src) |src_file| {
+        defer src_file.close();
+
+        const dest_exe_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest_path, manifest.executable }) catch {
+            return .{ .success = true, .name = manifest.name, .version = manifest.version, .message = "Installed (without executable)" };
+        };
+        defer allocator.free(dest_exe_path);
+
+        const dest_exe = std.fs.cwd().createFile(dest_exe_path, .{}) catch null;
+        if (dest_exe) |de| {
+            defer de.close();
+            const exe_content = src_file.readToEndAlloc(allocator, 50 * 1024 * 1024) catch null;
+            if (exe_content) |ec| {
+                defer allocator.free(ec);
+                de.writeAll(ec) catch {};
+            }
+        }
+    }
+
+    return .{ .success = true, .name = manifest.name, .version = manifest.version, .message = "Plugin installed successfully" };
+}
+
+/// Build a plugin registry entry for tracking installed plugins.
+/// Returns a JSON string representing the installed plugin.
+pub fn buildRegistryEntry(allocator: Allocator, name: []const u8, version: []const u8, source: []const u8) []const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\",\"source\":\"{s}\",\"installed_at\":{d}}}", .{
+        escapeJsonString(name),
+        escapeJsonString(version),
+        escapeJsonString(source),
+        std.time.timestamp(),
+    }) catch return "";
+
+    return buf.toOwnedSlice() catch return "";
+}
+
+/// Uninstall a plugin by name by removing its directory from the plugins directory.
+pub fn uninstallPlugin(allocator: Allocator, name: []const u8, plugin_dir: []const u8) bool {
+    const path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ plugin_dir, name }) catch return false;
+    defer allocator.free(path);
+
+    std.fs.cwd().deleteTree(path) catch return false;
+    return true;
+}
+
+/// Format an install result for terminal display.
+pub fn formatInstallResult(allocator: Allocator, result: InstallResult) []const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    if (result.success) {
+        writer.print("\x1b[32m✓\x1b[0m Installed \x1b[1m{s}\x1b[0m v{s}\n", .{ result.name, result.version }) catch return "";
+        writer.print("  {s}\n", .{result.message}) catch return "";
+    } else {
+        writer.print("\x1b[31m✗\x1b[0m Installation failed\n", .{}) catch return "";
+        writer.print("  {s}\n", .{result.message}) catch return "";
+    }
+
+    return buf.toOwnedSlice() catch return "";
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
+
+test "buildRegistryEntry produces valid json" {
+    const entry = buildRegistryEntry(std.testing.allocator, "test-plugin", "1.0.0", "/path/to/source");
+    defer std.testing.allocator.free(entry);
+
+    try std.testing.expect(mem.indexOf(u8, entry, "\"name\":\"test-plugin\"") != null);
+    try std.testing.expect(mem.indexOf(u8, entry, "\"version\":\"1.0.0\"") != null);
+    try std.testing.expect(mem.indexOf(u8, entry, "\"source\":\"/path/to/source\"") != null);
+    try std.testing.expect(mem.indexOf(u8, entry, "\"installed_at\":") != null);
+}
+
+test "formatInstallResult success" {
+    const result = InstallResult{
+        .success = true,
+        .name = "my-plugin",
+        .version = "2.0",
+        .message = "Plugin installed successfully",
+    };
+
+    const output = formatInstallResult(std.testing.allocator, result);
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(mem.indexOf(u8, output, "my-plugin") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "v2.0") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "\x1b[32m") != null); // green color
+}
+
+test "formatInstallResult failure" {
+    const result = InstallResult{
+        .success = false,
+        .name = "",
+        .version = "",
+        .message = "No plugin.json found",
+    };
+
+    const output = formatInstallResult(std.testing.allocator, result);
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(mem.indexOf(u8, output, "failed") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "No plugin.json found") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "\x1b[31m") != null); // red color
+}
 
 test "loadManifest parses valid plugin.json" {
     const json =

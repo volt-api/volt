@@ -339,8 +339,8 @@ pub const BrowserCommand = struct {
 pub fn getBrowserCommand(url: []const u8) BrowserCommand {
     return switch (builtin.os.tag) {
         .windows => .{
-            .prog = "cmd",
-            .args = .{ "/c", url },
+            .prog = "rundll32",
+            .args = .{ "url.dll,FileProtocolHandler", url },
         },
         .macos => .{
             .prog = "open",
@@ -453,7 +453,317 @@ pub fn startAuthFlow(allocator: Allocator, config: AuthFlowConfig) !AuthFlowStat
     };
 }
 
+// ── Local Callback Server ───────────────────────────────────────────
+//
+// TCP listener that captures the OAuth authorization code from the browser redirect.
+// The browser redirects to http://localhost:<port>/callback?code=AUTH_CODE&state=STATE
+// and this server captures the code, responds with a success/error page, then closes.
+
+pub const CallbackServer = struct {
+    allocator: Allocator,
+    port: u16,
+    server: ?std.net.Server,
+
+    pub fn init(allocator: Allocator, port: u16) CallbackServer {
+        return .{
+            .allocator = allocator,
+            .port = port,
+            .server = null,
+        };
+    }
+
+    /// Start listening on the configured port.
+    pub fn listen(self: *CallbackServer) !void {
+        const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, self.port);
+        self.server = try address.listen(.{
+            .reuse_address = true,
+        });
+    }
+
+    /// Wait for the browser callback, parse the authorization code, and respond.
+    /// Returns the parsed CallbackResult containing the auth code.
+    /// Returned string slices are heap-allocated; caller must free them.
+    /// Blocks until a connection is received or timeout occurs.
+    pub fn waitForCallback(self: *CallbackServer) !CallbackResult {
+        var server = self.server orelse return error.ServerNotStarted;
+
+        const connection = try server.accept();
+        defer connection.stream.close();
+
+        // Read the HTTP request
+        var request_buf: [4096]u8 = undefined;
+        const bytes_read = try connection.stream.read(&request_buf);
+        if (bytes_read == 0) return error.EmptyRequest;
+
+        const raw_request = request_buf[0..bytes_read];
+
+        // Parse the callback parameters (slices point into stack buffer)
+        const parsed = parseCallbackRequest(raw_request);
+
+        // Send response to browser
+        const response_html = buildCallbackResponse(parsed.code != null and parsed.error_msg == null);
+        connection.stream.writeAll(response_html) catch {};
+
+        // Dupe strings to heap so they outlive the stack buffer
+        return CallbackResult{
+            .code = if (parsed.code) |c| self.allocator.dupe(u8, c) catch null else null,
+            .state = if (parsed.state) |s| self.allocator.dupe(u8, s) catch null else null,
+            .error_msg = if (parsed.error_msg) |e| self.allocator.dupe(u8, e) catch null else null,
+        };
+    }
+
+    /// Clean up the server resources.
+    pub fn deinit(self: *CallbackServer) void {
+        if (self.server) |*server| {
+            server.deinit();
+            self.server = null;
+        }
+    }
+};
+
+/// Run the complete OAuth callback flow:
+/// 1. Start local callback server
+/// 2. Open browser to authorization URL
+/// 3. Wait for callback with auth code
+/// Returns the authorization code on success.
+pub fn runCallbackFlow(allocator: Allocator, flow: *AuthFlowState) ![]const u8 {
+    // Start callback server
+    var server = CallbackServer.init(allocator, flow.config.redirect_port);
+    defer server.deinit();
+    try server.listen();
+
+    // Open browser to authorization URL
+    const browser_cmd = getBrowserCommand(flow.authorization_url);
+    const argv: []const []const u8 = &.{ browser_cmd.prog, browser_cmd.args[0], browser_cmd.args[1] };
+    var child = std.process.Child.init(argv, allocator);
+    child.spawn() catch {};
+
+    // Wait for callback (returned strings are heap-allocated)
+    const result = try server.waitForCallback();
+    defer {
+        if (result.state) |s| allocator.free(s);
+        if (result.error_msg) |e| allocator.free(e);
+    }
+
+    if (result.error_msg) |_| {
+        if (result.code) |c| allocator.free(c);
+        return error.AuthorizationDenied;
+    }
+
+    if (result.code) |code| {
+        return code; // Transfer ownership to caller
+    }
+
+    return error.NoAuthorizationCode;
+}
+
+// ── Token Auto-Refresh ──────────────────────────────────────────────
+
+/// Check if a stored token is expired.
+/// Returns true if the current time is past the token's expiry time,
+/// accounting for a 60-second buffer for clock skew.
+pub fn isTokenExpired(token: StoredToken) bool {
+    const now = std.time.timestamp();
+    // Subtract 60-second buffer: treat token as expired 60s before actual expiry
+    // to account for clock skew between client and server.
+    return now >= (token.expires_at - 60);
+}
+
+/// Check if a token should be automatically refreshed.
+/// Returns true if the token has a refresh_token AND is within 5 minutes
+/// of expiry or already expired.
+pub fn shouldAutoRefresh(token: StoredToken) bool {
+    // Must have a refresh token to be eligible for auto-refresh
+    if (token.refresh_token == null) return false;
+
+    const now = std.time.timestamp();
+    const five_minutes: i64 = 5 * 60; // 300 seconds
+
+    // Auto-refresh if within 5 minutes of expiry or already expired
+    return now >= (token.expires_at - five_minutes);
+}
+
+/// Build the URL-encoded form body for a token refresh request.
+/// Uses grant_type=refresh_token per RFC 6749 Section 6.
+/// Caller owns the returned slice.
+pub fn buildRefreshTokenBody(
+    allocator: Allocator,
+    refresh_token: []const u8,
+    config: AuthFlowConfig,
+) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    const writer = buf.writer();
+
+    try writer.writeAll("grant_type=refresh_token");
+
+    try writer.writeAll("&refresh_token=");
+    const encoded_token = try urlEncode(allocator, refresh_token);
+    defer allocator.free(encoded_token);
+    try writer.writeAll(encoded_token);
+
+    try writer.writeAll("&client_id=");
+    const encoded_id = try urlEncode(allocator, config.client_id);
+    defer allocator.free(encoded_id);
+    try writer.writeAll(encoded_id);
+
+    if (config.client_secret) |secret| {
+        try writer.writeAll("&client_secret=");
+        const encoded_secret = try urlEncode(allocator, secret);
+        defer allocator.free(encoded_secret);
+        try writer.writeAll(encoded_secret);
+    }
+
+    if (config.scope) |scope| {
+        try writer.writeAll("&scope=");
+        const encoded_scope = try urlEncode(allocator, scope);
+        defer allocator.free(encoded_scope);
+        try writer.writeAll(encoded_scope);
+    }
+
+    return buf.toOwnedSlice();
+}
+
+// ── Client Credentials Grant (RFC 6749 Section 4.4) ─────────────────
+
+/// Build the URL-encoded form body for a Client Credentials grant request.
+/// Used for machine-to-machine authentication (no user involvement).
+/// Caller owns the returned slice.
+pub fn buildClientCredentialsBody(
+    allocator: Allocator,
+    config: AuthFlowConfig,
+) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    const writer = buf.writer();
+
+    try writer.writeAll("grant_type=client_credentials");
+
+    try writer.writeAll("&client_id=");
+    const encoded_id = try urlEncode(allocator, config.client_id);
+    defer allocator.free(encoded_id);
+    try writer.writeAll(encoded_id);
+
+    if (config.client_secret) |secret| {
+        try writer.writeAll("&client_secret=");
+        const encoded_secret = try urlEncode(allocator, secret);
+        defer allocator.free(encoded_secret);
+        try writer.writeAll(encoded_secret);
+    }
+
+    if (config.scope) |scope| {
+        try writer.writeAll("&scope=");
+        const encoded_scope = try urlEncode(allocator, scope);
+        defer allocator.free(encoded_scope);
+        try writer.writeAll(encoded_scope);
+    }
+
+    return buf.toOwnedSlice();
+}
+
+// ── Resource Owner Password Grant (RFC 6749 Section 4.3) ────────────
+
+/// Build the URL-encoded form body for a Password grant request.
+/// Uses resource owner's credentials directly (username + password).
+/// Caller owns the returned slice.
+pub fn buildPasswordGrantBody(
+    allocator: Allocator,
+    username: []const u8,
+    password: []const u8,
+    config: AuthFlowConfig,
+) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    const writer = buf.writer();
+
+    try writer.writeAll("grant_type=password");
+
+    try writer.writeAll("&username=");
+    const encoded_user = try urlEncode(allocator, username);
+    defer allocator.free(encoded_user);
+    try writer.writeAll(encoded_user);
+
+    try writer.writeAll("&password=");
+    const encoded_pass = try urlEncode(allocator, password);
+    defer allocator.free(encoded_pass);
+    try writer.writeAll(encoded_pass);
+
+    try writer.writeAll("&client_id=");
+    const encoded_id = try urlEncode(allocator, config.client_id);
+    defer allocator.free(encoded_id);
+    try writer.writeAll(encoded_id);
+
+    if (config.client_secret) |secret| {
+        try writer.writeAll("&client_secret=");
+        const encoded_secret = try urlEncode(allocator, secret);
+        defer allocator.free(encoded_secret);
+        try writer.writeAll(encoded_secret);
+    }
+
+    if (config.scope) |scope| {
+        try writer.writeAll("&scope=");
+        const encoded_scope = try urlEncode(allocator, scope);
+        defer allocator.free(encoded_scope);
+        try writer.writeAll(encoded_scope);
+    }
+
+    return buf.toOwnedSlice();
+}
+
+// ── Implicit Grant (RFC 6749 Section 4.2) ───────────────────────────
+
+/// Build the authorization URL for the Implicit grant flow.
+/// Returns a URL that redirects with an access_token fragment (no code exchange).
+/// Caller owns the returned slice.
+pub fn buildImplicitAuthUrl(
+    allocator: Allocator,
+    config: AuthFlowConfig,
+) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    const writer = buf.writer();
+
+    try writer.writeAll(config.auth_url);
+    try writer.writeAll("?client_id=");
+    const encoded_id = try urlEncode(allocator, config.client_id);
+    defer allocator.free(encoded_id);
+    try writer.writeAll(encoded_id);
+
+    try writer.writeAll("&redirect_uri=");
+    var redirect_buf: [64]u8 = undefined;
+    const redirect_uri = std.fmt.bufPrint(&redirect_buf, "http://localhost:{d}/callback", .{config.redirect_port}) catch return error.OutOfMemory;
+    const encoded_redirect = try urlEncode(allocator, redirect_uri);
+    defer allocator.free(encoded_redirect);
+    try writer.writeAll(encoded_redirect);
+
+    try writer.writeAll("&response_type=token");
+
+    if (config.scope) |scope| {
+        try writer.writeAll("&scope=");
+        const encoded_scope = try urlEncode(allocator, scope);
+        defer allocator.free(encoded_scope);
+        try writer.writeAll(encoded_scope);
+    }
+
+    if (config.state) |state| {
+        try writer.writeAll("&state=");
+        const encoded_state = try urlEncode(allocator, state);
+        defer allocator.free(encoded_state);
+        try writer.writeAll(encoded_state);
+    }
+
+    return buf.toOwnedSlice();
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
+
+test "CallbackServer init" {
+    var server = CallbackServer.init(std.testing.allocator, 8234);
+    defer server.deinit();
+
+    try std.testing.expectEqual(@as(u16, 8234), server.port);
+    try std.testing.expect(server.server == null);
+}
 
 test "PKCE generation - verifier length" {
     const pkce = generatePKCE();
@@ -657,8 +967,9 @@ test "browser command per platform" {
 
     switch (builtin.os.tag) {
         .windows => {
-            try std.testing.expectEqualStrings("cmd", cmd.prog);
-            try std.testing.expectEqualStrings("/c", cmd.args[0]);
+            try std.testing.expectEqualStrings("rundll32", cmd.prog);
+            try std.testing.expectEqualStrings("url.dll,FileProtocolHandler", cmd.args[0]);
+            try std.testing.expectEqualStrings(url, cmd.args[1]);
         },
         .macos => {
             try std.testing.expectEqualStrings("open", cmd.prog);
@@ -707,4 +1018,263 @@ test "AuthFlowState init and deinit" {
     try std.testing.expect(mem.indexOf(u8, flow.authorization_url, "client_id=test-client") != null);
     try std.testing.expect(mem.indexOf(u8, flow.authorization_url, "code_challenge_method=S256") != null);
     try std.testing.expect(mem.indexOf(u8, flow.authorization_url, "state=") != null);
+}
+
+test "isTokenExpired - expired token" {
+    const token = StoredToken{
+        .access_token = "expired-access-token",
+        .refresh_token = "some-refresh-token",
+        .expires_at = 1000, // Far in the past
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(isTokenExpired(token));
+}
+
+test "isTokenExpired - valid token far in the future" {
+    const now = std.time.timestamp();
+    const token = StoredToken{
+        .access_token = "valid-access-token",
+        .refresh_token = null,
+        .expires_at = now + 3600, // 1 hour from now
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(!isTokenExpired(token));
+}
+
+test "isTokenExpired - token within 60s clock skew buffer is treated as expired" {
+    const now = std.time.timestamp();
+    const token = StoredToken{
+        .access_token = "almost-expired-token",
+        .refresh_token = null,
+        .expires_at = now + 30, // 30 seconds from now, within 60s buffer
+        .scope = null,
+        .provider = "test",
+    };
+    // Should be expired because now >= (expires_at - 60) => now >= now - 30 => true
+    try std.testing.expect(isTokenExpired(token));
+}
+
+test "isTokenExpired - token just outside 60s buffer is not expired" {
+    const now = std.time.timestamp();
+    const token = StoredToken{
+        .access_token = "not-yet-expired-token",
+        .refresh_token = null,
+        .expires_at = now + 120, // 2 minutes from now, well outside 60s buffer
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(!isTokenExpired(token));
+}
+
+test "shouldAutoRefresh - expired token with refresh_token" {
+    const token = StoredToken{
+        .access_token = "expired",
+        .refresh_token = "refresh-me",
+        .expires_at = 1000, // Far in the past
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(shouldAutoRefresh(token));
+}
+
+test "shouldAutoRefresh - token without refresh_token" {
+    const token = StoredToken{
+        .access_token = "expired",
+        .refresh_token = null,
+        .expires_at = 1000, // Far in the past
+        .scope = null,
+        .provider = "test",
+    };
+    // No refresh token available, so cannot auto-refresh
+    try std.testing.expect(!shouldAutoRefresh(token));
+}
+
+test "shouldAutoRefresh - token within 5 minutes of expiry with refresh_token" {
+    const now = std.time.timestamp();
+    const token = StoredToken{
+        .access_token = "almost-expired",
+        .refresh_token = "refresh-me",
+        .expires_at = now + 120, // 2 minutes from now (within 5 min window)
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(shouldAutoRefresh(token));
+}
+
+test "shouldAutoRefresh - token far from expiry with refresh_token" {
+    const now = std.time.timestamp();
+    const token = StoredToken{
+        .access_token = "fresh",
+        .refresh_token = "refresh-me",
+        .expires_at = now + 3600, // 1 hour from now
+        .scope = null,
+        .provider = "test",
+    };
+    try std.testing.expect(!shouldAutoRefresh(token));
+}
+
+test "buildRefreshTokenBody - basic refresh request" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .redirect_port = 8234,
+    };
+
+    const body = try buildRefreshTokenBody(std.testing.allocator, "my-refresh-token", config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.indexOf(u8, body, "grant_type=refresh_token") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "refresh_token=my-refresh-token") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_id=my-client") != null);
+    // No client_secret or scope by default
+    try std.testing.expect(mem.indexOf(u8, body, "client_secret=") == null);
+    try std.testing.expect(mem.indexOf(u8, body, "scope=") == null);
+}
+
+test "buildRefreshTokenBody - with client_secret and scope" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .client_secret = "my-secret",
+        .redirect_port = 8234,
+        .scope = "openid profile email",
+    };
+
+    const body = try buildRefreshTokenBody(std.testing.allocator, "rt_abc123", config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.indexOf(u8, body, "grant_type=refresh_token") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "refresh_token=rt_abc123") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_id=my-client") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_secret=my-secret") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "scope=openid+profile+email") != null);
+}
+
+test "buildRefreshTokenBody - special characters in refresh token are encoded" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .redirect_port = 8234,
+    };
+
+    const body = try buildRefreshTokenBody(std.testing.allocator, "token/with=special&chars", config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.indexOf(u8, body, "grant_type=refresh_token") != null);
+    // The special characters should be percent-encoded
+    try std.testing.expect(mem.indexOf(u8, body, "refresh_token=token%2Fwith%3Dspecial%26chars") != null);
+}
+
+test "buildRefreshTokenBody - grant_type comes first" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "test",
+        .redirect_port = 8234,
+    };
+
+    const body = try buildRefreshTokenBody(std.testing.allocator, "rt", config);
+    defer std.testing.allocator.free(body);
+
+    // grant_type should be the first parameter
+    try std.testing.expect(mem.startsWith(u8, body, "grant_type=refresh_token"));
+}
+
+test "buildClientCredentialsBody - basic request" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .client_secret = "my-secret",
+        .redirect_port = 8234,
+        .scope = "read write",
+    };
+
+    const body = try buildClientCredentialsBody(std.testing.allocator, config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.startsWith(u8, body, "grant_type=client_credentials"));
+    try std.testing.expect(mem.indexOf(u8, body, "client_id=my-client") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_secret=my-secret") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "scope=read+write") != null);
+}
+
+test "buildClientCredentialsBody - without optional fields" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .redirect_port = 8234,
+    };
+
+    const body = try buildClientCredentialsBody(std.testing.allocator, config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.startsWith(u8, body, "grant_type=client_credentials"));
+    try std.testing.expect(mem.indexOf(u8, body, "client_id=my-client") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_secret=") == null);
+    try std.testing.expect(mem.indexOf(u8, body, "scope=") == null);
+}
+
+test "buildPasswordGrantBody - basic request" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .client_secret = "my-secret",
+        .redirect_port = 8234,
+        .scope = "openid",
+    };
+
+    const body = try buildPasswordGrantBody(std.testing.allocator, "user@example.com", "p@ssw0rd", config);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(mem.startsWith(u8, body, "grant_type=password"));
+    try std.testing.expect(mem.indexOf(u8, body, "username=user%40example.com") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "password=p%40ssw0rd") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_id=my-client") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "client_secret=my-secret") != null);
+    try std.testing.expect(mem.indexOf(u8, body, "scope=openid") != null);
+}
+
+test "buildImplicitAuthUrl - contains required params" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .redirect_port = 8234,
+        .scope = "openid profile",
+        .state = "csrf-token",
+    };
+
+    const url = try buildImplicitAuthUrl(std.testing.allocator, config);
+    defer std.testing.allocator.free(url);
+
+    try std.testing.expect(mem.startsWith(u8, url, "https://auth.example.com/authorize?"));
+    try std.testing.expect(mem.indexOf(u8, url, "client_id=my-client") != null);
+    try std.testing.expect(mem.indexOf(u8, url, "response_type=token") != null);
+    try std.testing.expect(mem.indexOf(u8, url, "redirect_uri=") != null);
+    try std.testing.expect(mem.indexOf(u8, url, "scope=openid+profile") != null);
+    try std.testing.expect(mem.indexOf(u8, url, "state=csrf-token") != null);
+}
+
+test "buildImplicitAuthUrl - without optional fields" {
+    const config = AuthFlowConfig{
+        .auth_url = "https://auth.example.com/authorize",
+        .token_url = "https://auth.example.com/token",
+        .client_id = "my-client",
+        .redirect_port = 8234,
+    };
+
+    const url = try buildImplicitAuthUrl(std.testing.allocator, config);
+    defer std.testing.allocator.free(url);
+
+    try std.testing.expect(mem.indexOf(u8, url, "response_type=token") != null);
+    try std.testing.expect(mem.indexOf(u8, url, "scope=") == null);
+    try std.testing.expect(mem.indexOf(u8, url, "state=") == null);
 }

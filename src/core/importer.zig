@@ -365,6 +365,42 @@ fn convertPostmanScript(
             continue;
         }
 
+        // pm.globals.set("key", "value") -> set key value
+        if (convertPmGlobalsSet(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
+        // pm.collectionVariables.set("key", "value") -> set key value
+        if (convertPmCollectionVarsSet(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
+        // pm.variables.set("key", "value") -> set key value
+        if (convertPmVariablesSet(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
+        // pm.response.to.have.status(200) -> assert status equals 200
+        if (convertPmResponseStatus(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
+        // pm.response.to.have.header("X-Header") -> assert header.X-Header exists
+        if (convertPmResponseHeader(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
+        // pm.expect(pm.response.responseTime).to.be.below(N) -> assert response_time < N
+        if (convertPmResponseTime(trimmed, writer)) {
+            has_content = true;
+            continue;
+        }
+
         // If we couldn't convert, log it as skipped
         const type_str = switch (script_type) {
             .prerequest => "pre-request",
@@ -463,6 +499,89 @@ fn mapFieldToVolt(expr: []const u8) ?[]const u8 {
         return expr["pm.response.json()".len..]; // Returns ".field"
     }
     return null;
+}
+
+/// Try to convert pm.globals.set("key", "value") to "set key value\n"
+fn convertPmGlobalsSet(line: []const u8, writer: anytype) bool {
+    const set_prefix = "pm.globals.set(";
+    const idx = mem.indexOf(u8, line, set_prefix) orelse return false;
+    const rest = line[idx + set_prefix.len ..];
+
+    const key = extractQuotedString(rest) orelse return false;
+    const after_key = mem.indexOf(u8, rest, ",") orelse return false;
+    const value_part = mem.trim(u8, rest[after_key + 1 ..], " \t");
+    const value = extractQuotedString(value_part) orelse return false;
+
+    writer.print("set {s} {s}\n", .{ key, value }) catch return false;
+    return true;
+}
+
+/// Try to convert pm.collectionVariables.set("key", "value") to "set key value\n"
+fn convertPmCollectionVarsSet(line: []const u8, writer: anytype) bool {
+    const set_prefix = "pm.collectionVariables.set(";
+    const idx = mem.indexOf(u8, line, set_prefix) orelse return false;
+    const rest = line[idx + set_prefix.len ..];
+
+    const key = extractQuotedString(rest) orelse return false;
+    const after_key = mem.indexOf(u8, rest, ",") orelse return false;
+    const value_part = mem.trim(u8, rest[after_key + 1 ..], " \t");
+    const value = extractQuotedString(value_part) orelse return false;
+
+    writer.print("set {s} {s}\n", .{ key, value }) catch return false;
+    return true;
+}
+
+/// Try to convert pm.variables.set("key", "value") to "set key value\n"
+fn convertPmVariablesSet(line: []const u8, writer: anytype) bool {
+    const set_prefix = "pm.variables.set(";
+    const idx = mem.indexOf(u8, line, set_prefix) orelse return false;
+    const rest = line[idx + set_prefix.len ..];
+
+    const key = extractQuotedString(rest) orelse return false;
+    const after_key = mem.indexOf(u8, rest, ",") orelse return false;
+    const value_part = mem.trim(u8, rest[after_key + 1 ..], " \t");
+    const value = extractQuotedString(value_part) orelse return false;
+
+    writer.print("set {s} {s}\n", .{ key, value }) catch return false;
+    return true;
+}
+
+/// Try to convert pm.response.to.have.status(200) to "assert status equals 200\n"
+fn convertPmResponseStatus(line: []const u8, writer: anytype) bool {
+    const pattern = "pm.response.to.have.status(";
+    const idx = mem.indexOf(u8, line, pattern) orelse return false;
+    const rest = line[idx + pattern.len ..];
+    const close_paren = mem.indexOf(u8, rest, ")") orelse return false;
+    const status_val = mem.trim(u8, rest[0..close_paren], " \t\"'");
+    if (status_val.len == 0) return false;
+
+    writer.print("assert status equals {s}\n", .{status_val}) catch return false;
+    return true;
+}
+
+/// Try to convert pm.response.to.have.header("X-Header") to "assert header.X-Header exists\n"
+fn convertPmResponseHeader(line: []const u8, writer: anytype) bool {
+    const pattern = "pm.response.to.have.header(";
+    const idx = mem.indexOf(u8, line, pattern) orelse return false;
+    const rest = line[idx + pattern.len ..];
+    const header_name = extractQuotedString(rest) orelse return false;
+
+    writer.print("assert header.{s} exists\n", .{header_name}) catch return false;
+    return true;
+}
+
+/// Try to convert pm.expect(pm.response.responseTime).to.be.below(N) to "log response time check\n"
+fn convertPmResponseTime(line: []const u8, writer: anytype) bool {
+    if (mem.indexOf(u8, line, "pm.response.responseTime") == null) return false;
+
+    const below_pattern = ".to.be.below(";
+    const below_idx = mem.indexOf(u8, line, below_pattern) orelse return false;
+    const rest = line[below_idx + below_pattern.len ..];
+    const close = mem.indexOf(u8, rest, ")") orelse return false;
+    const threshold = mem.trim(u8, rest[0..close], " \t");
+
+    writer.print("log Response time check: < {s}ms\n", .{threshold}) catch return false;
+    return true;
 }
 
 /// Extract a quoted string value from text like `"key"` or `'key'`.
@@ -1409,6 +1528,60 @@ test "convertPmExpect with jsonData field" {
 
     try std.testing.expect(convertPmExpect("pm.expect(jsonData.status).to.equal(\"ok\");", writer));
     try std.testing.expectEqualStrings("assert body.status equals ok\n", buf.items);
+}
+
+test "convertPmGlobalsSet helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmGlobalsSet("pm.globals.set(\"api_key\", \"xyz789\");", writer));
+    try std.testing.expectEqualStrings("set api_key xyz789\n", buf.items);
+}
+
+test "convertPmCollectionVarsSet helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmCollectionVarsSet("pm.collectionVariables.set(\"base\", \"https://api.com\");", writer));
+    try std.testing.expectEqualStrings("set base https://api.com\n", buf.items);
+}
+
+test "convertPmVariablesSet helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmVariablesSet("pm.variables.set(\"temp\", \"value\");", writer));
+    try std.testing.expectEqualStrings("set temp value\n", buf.items);
+}
+
+test "convertPmResponseStatus helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmResponseStatus("pm.response.to.have.status(201);", writer));
+    try std.testing.expectEqualStrings("assert status equals 201\n", buf.items);
+}
+
+test "convertPmResponseHeader helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmResponseHeader("pm.response.to.have.header(\"Content-Type\");", writer));
+    try std.testing.expectEqualStrings("assert header.Content-Type exists\n", buf.items);
+}
+
+test "convertPmResponseTime helper" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
+
+    try std.testing.expect(convertPmResponseTime("pm.expect(pm.response.responseTime).to.be.below(500);", writer));
+    try std.testing.expectEqualStrings("log Response time check: < 500ms\n", buf.items);
 }
 
 test "script conversion skips unconvertible lines and logs errors" {

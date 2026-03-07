@@ -27,17 +27,67 @@ pub const ApiHandler = struct {
     history: History.RequestHistory,
     env_manager: Environment.EnvManager,
 
+    // WebSocket simulation state
+    ws_connected: bool = false,
+    ws_url: []const u8 = "",
+    ws_id: []const u8 = "",
+    ws_messages: std.ArrayList(WsMessage) = undefined,
+    ws_initialized: bool = false,
+
+    // SSE simulation state
+    sse_connected: bool = false,
+    sse_url: []const u8 = "",
+    sse_id: []const u8 = "",
+    sse_events: std.ArrayList(SseEvent) = undefined,
+    sse_initialized: bool = false,
+
+    pub const WsMessage = struct {
+        data: []const u8,
+        timestamp: i64,
+        direction: []const u8, // "sent" or "received"
+    };
+
+    pub const SseEvent = struct {
+        event_type: []const u8,
+        data: []const u8,
+        id: []const u8,
+        timestamp: i64,
+    };
+
     pub fn init(allocator: Allocator) ApiHandler {
         return .{
             .allocator = allocator,
             .history = History.RequestHistory.init(allocator),
             .env_manager = Environment.EnvManager.init(allocator),
+            .ws_messages = std.ArrayList(WsMessage).init(allocator),
+            .ws_initialized = true,
+            .sse_events = std.ArrayList(SseEvent).init(allocator),
+            .sse_initialized = true,
         };
     }
 
     pub fn deinit(self: *ApiHandler) void {
         self.history.deinit();
         self.env_manager.deinit();
+        if (self.ws_initialized) {
+            for (self.ws_messages.items) |msg| {
+                self.allocator.free(msg.data);
+                self.allocator.free(msg.direction);
+            }
+            self.ws_messages.deinit();
+        }
+        if (self.ws_url.len > 0) self.allocator.free(self.ws_url);
+        if (self.ws_id.len > 0) self.allocator.free(self.ws_id);
+        if (self.sse_initialized) {
+            for (self.sse_events.items) |evt| {
+                self.allocator.free(evt.event_type);
+                self.allocator.free(evt.data);
+                self.allocator.free(evt.id);
+            }
+            self.sse_events.deinit();
+        }
+        if (self.sse_url.len > 0) self.allocator.free(self.sse_url);
+        if (self.sse_id.len > 0) self.allocator.free(self.sse_id);
     }
 
     /// Route an API request to the appropriate handler.
@@ -113,9 +163,48 @@ pub const ApiHandler = struct {
             return self.handleUpdateConfig(body);
         }
 
+        // WebSocket simulation
+        if (mem.eql(u8, path, "/api/ws/connect") and method == .POST) {
+            return self.handleWsConnect(body);
+        }
+        if (mem.eql(u8, path, "/api/ws/send") and method == .POST) {
+            return self.handleWsSend(body);
+        }
+        if (mem.eql(u8, path, "/api/ws/messages") and method == .GET) {
+            return self.handleWsMessages();
+        }
+        if (mem.eql(u8, path, "/api/ws/disconnect") and method == .POST) {
+            return self.handleWsDisconnect();
+        }
+        if (mem.eql(u8, path, "/api/ws/status") and method == .GET) {
+            return self.handleWsStatus();
+        }
+
+        // SSE simulation
+        if (mem.eql(u8, path, "/api/sse/connect") and method == .POST) {
+            return self.handleSseConnect(body);
+        }
+        if (mem.eql(u8, path, "/api/sse/events") and method == .GET) {
+            return self.handleSseEvents();
+        }
+        if (mem.eql(u8, path, "/api/sse/disconnect") and method == .POST) {
+            return self.handleSseDisconnect();
+        }
+        if (mem.eql(u8, path, "/api/sse/status") and method == .GET) {
+            return self.handleSseStatus();
+        }
+
+        // Collection runner
+        if (mem.eql(u8, path, "/api/collection/files") and method == .GET) {
+            return self.handleCollectionFiles(query);
+        }
+        if (mem.eql(u8, path, "/api/collection/run") and method == .POST) {
+            return self.handleCollectionRun(body);
+        }
+
         // Health check
         if (mem.eql(u8, path, "/api/health")) {
-            return try std.fmt.allocPrint(self.allocator, "{{\"status\": \"ok\", \"version\": \"1.0.0\"}}", .{});
+            return try std.fmt.allocPrint(self.allocator, "{{\"status\": \"ok\", \"version\": \"1.1.0\"}}", .{});
         }
 
         return try std.fmt.allocPrint(self.allocator, "{{\"error\": \"Unknown API endpoint: {s}\"}}", .{path});
@@ -666,6 +755,377 @@ pub const ApiHandler = struct {
         };
 
         return try std.fmt.allocPrint(self.allocator, "{{\"saved\": true}}", .{});
+    }
+
+    // ── WebSocket Simulation ───────────────────────────────────────────
+
+    fn handleWsConnect(self: *ApiHandler, body: ?[]const u8) ![]const u8 {
+        const json_body = body orelse return try self.jsonError("Request body is required");
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_body, .{}) catch {
+            return try self.jsonError("Invalid JSON in request body");
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+        const url_val = root.get("url") orelse return try self.jsonError("'url' field is required");
+        if (url_val != .string) return try self.jsonError("'url' must be a string");
+
+        // Clean up previous connection state
+        if (self.ws_url.len > 0) self.allocator.free(self.ws_url);
+        if (self.ws_id.len > 0) self.allocator.free(self.ws_id);
+        for (self.ws_messages.items) |msg| {
+            self.allocator.free(msg.data);
+            self.allocator.free(msg.direction);
+        }
+        self.ws_messages.clearRetainingCapacity();
+
+        self.ws_url = try self.allocator.dupe(u8, url_val.string);
+        self.ws_id = try std.fmt.allocPrint(self.allocator, "ws-{d}", .{std.time.timestamp()});
+        self.ws_connected = true;
+
+        // Add a simulated welcome message
+        try self.ws_messages.append(.{
+            .data = try self.allocator.dupe(u8, "Connected to WebSocket server"),
+            .timestamp = std.time.timestamp(),
+            .direction = try self.allocator.dupe(u8, "received"),
+        });
+
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+        try writer.writeAll("{\"status\": \"connected\", \"id\": \"");
+        try writer.writeAll(self.ws_id);
+        try writer.writeAll("\"}");
+        return buf.toOwnedSlice();
+    }
+
+    fn handleWsSend(self: *ApiHandler, body: ?[]const u8) ![]const u8 {
+        if (!self.ws_connected) return try self.jsonError("WebSocket is not connected");
+
+        const json_body = body orelse return try self.jsonError("Request body is required");
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_body, .{}) catch {
+            return try self.jsonError("Invalid JSON in request body");
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+        const msg_val = root.get("message") orelse return try self.jsonError("'message' field is required");
+        if (msg_val != .string) return try self.jsonError("'message' must be a string");
+
+        const now = std.time.timestamp();
+
+        // Record the sent message
+        try self.ws_messages.append(.{
+            .data = try self.allocator.dupe(u8, msg_val.string),
+            .timestamp = now,
+            .direction = try self.allocator.dupe(u8, "sent"),
+        });
+
+        // Simulate an echo response
+        const echo_data = try std.fmt.allocPrint(self.allocator, "Echo: {s}", .{msg_val.string});
+        try self.ws_messages.append(.{
+            .data = echo_data,
+            .timestamp = now + 1,
+            .direction = try self.allocator.dupe(u8, "received"),
+        });
+
+        return try std.fmt.allocPrint(self.allocator, "{{\"status\": \"sent\"}}", .{});
+    }
+
+    fn handleWsMessages(self: *ApiHandler) ![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+
+        try writer.writeAll("{\"messages\": [");
+        for (self.ws_messages.items, 0..) |msg, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("{\"data\": \"");
+            for (msg.data) |c| {
+                switch (c) {
+                    '"' => try writer.writeAll("\\\""),
+                    '\\' => try writer.writeAll("\\\\"),
+                    '\n' => try writer.writeAll("\\n"),
+                    '\r' => {},
+                    else => try writer.writeByte(c),
+                }
+            }
+            try writer.print("\", \"timestamp\": {d}, \"direction\": \"{s}\"}}", .{ msg.timestamp, msg.direction });
+        }
+        try writer.writeAll("]}");
+        return buf.toOwnedSlice();
+    }
+
+    fn handleWsDisconnect(self: *ApiHandler) ![]const u8 {
+        if (self.ws_connected) {
+            // Add disconnect message
+            try self.ws_messages.append(.{
+                .data = try self.allocator.dupe(u8, "Disconnected"),
+                .timestamp = std.time.timestamp(),
+                .direction = try self.allocator.dupe(u8, "received"),
+            });
+        }
+        self.ws_connected = false;
+        return try std.fmt.allocPrint(self.allocator, "{{\"status\": \"disconnected\"}}", .{});
+    }
+
+    fn handleWsStatus(self: *ApiHandler) ![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+        try writer.print("{{\"connected\": {s}, \"url\": \"", .{if (self.ws_connected) "true" else "false"});
+        for (self.ws_url) |c| {
+            switch (c) {
+                '"' => try writer.writeAll("\\\""),
+                '\\' => try writer.writeAll("\\\\"),
+                else => try writer.writeByte(c),
+            }
+        }
+        try writer.writeAll("\"}");
+        return buf.toOwnedSlice();
+    }
+
+    // ── SSE Simulation ──────────────────────────────────────────────────
+
+    fn handleSseConnect(self: *ApiHandler, body: ?[]const u8) ![]const u8 {
+        const json_body = body orelse return try self.jsonError("Request body is required");
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_body, .{}) catch {
+            return try self.jsonError("Invalid JSON in request body");
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+        const url_val = root.get("url") orelse return try self.jsonError("'url' field is required");
+        if (url_val != .string) return try self.jsonError("'url' must be a string");
+
+        // Clean up previous state
+        if (self.sse_url.len > 0) self.allocator.free(self.sse_url);
+        if (self.sse_id.len > 0) self.allocator.free(self.sse_id);
+        for (self.sse_events.items) |evt| {
+            self.allocator.free(evt.event_type);
+            self.allocator.free(evt.data);
+            self.allocator.free(evt.id);
+        }
+        self.sse_events.clearRetainingCapacity();
+
+        self.sse_url = try self.allocator.dupe(u8, url_val.string);
+        self.sse_id = try std.fmt.allocPrint(self.allocator, "sse-{d}", .{std.time.timestamp()});
+        self.sse_connected = true;
+
+        // Add a simulated initial event
+        try self.sse_events.append(.{
+            .event_type = try self.allocator.dupe(u8, "open"),
+            .data = try self.allocator.dupe(u8, "SSE connection established"),
+            .id = try self.allocator.dupe(u8, "0"),
+            .timestamp = std.time.timestamp(),
+        });
+
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+        try writer.writeAll("{\"status\": \"connected\", \"id\": \"");
+        try writer.writeAll(self.sse_id);
+        try writer.writeAll("\"}");
+        return buf.toOwnedSlice();
+    }
+
+    fn handleSseEvents(self: *ApiHandler) ![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+
+        try writer.writeAll("{\"events\": [");
+        for (self.sse_events.items, 0..) |evt, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("{\"type\": \"");
+            try writer.writeAll(evt.event_type);
+            try writer.writeAll("\", \"data\": \"");
+            for (evt.data) |c| {
+                switch (c) {
+                    '"' => try writer.writeAll("\\\""),
+                    '\\' => try writer.writeAll("\\\\"),
+                    '\n' => try writer.writeAll("\\n"),
+                    '\r' => {},
+                    else => try writer.writeByte(c),
+                }
+            }
+            try writer.print("\", \"id\": \"{s}\", \"timestamp\": {d}}}", .{ evt.id, evt.timestamp });
+        }
+        try writer.writeAll("]}");
+        return buf.toOwnedSlice();
+    }
+
+    fn handleSseDisconnect(self: *ApiHandler) ![]const u8 {
+        if (self.sse_connected) {
+            try self.sse_events.append(.{
+                .event_type = try self.allocator.dupe(u8, "close"),
+                .data = try self.allocator.dupe(u8, "SSE connection closed"),
+                .id = try std.fmt.allocPrint(self.allocator, "{d}", .{self.sse_events.items.len}),
+                .timestamp = std.time.timestamp(),
+            });
+        }
+        self.sse_connected = false;
+        return try std.fmt.allocPrint(self.allocator, "{{\"status\": \"disconnected\"}}", .{});
+    }
+
+    fn handleSseStatus(self: *ApiHandler) ![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+        try writer.print("{{\"connected\": {s}, \"url\": \"", .{if (self.sse_connected) "true" else "false"});
+        for (self.sse_url) |c| {
+            switch (c) {
+                '"' => try writer.writeAll("\\\""),
+                '\\' => try writer.writeAll("\\\\"),
+                else => try writer.writeByte(c),
+            }
+        }
+        try writer.writeAll("\"}");
+        return buf.toOwnedSlice();
+    }
+
+    // ── Collection Runner ───────────────────────────────────────────────
+
+    fn handleCollectionFiles(self: *ApiHandler, query: []const u8) ![]const u8 {
+        const dir_path = self.getQueryParam(query, "dir") orelse ".";
+
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+            return try self.jsonError("Cannot open directory");
+        };
+        defer dir.close();
+
+        var files = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (files.items) |f| self.allocator.free(f);
+            files.deinit();
+        }
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file and mem.endsWith(u8, entry.name, ".volt")) {
+                try files.append(try self.allocator.dupe(u8, entry.name));
+            }
+        }
+
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+
+        try writer.writeAll("{\"files\": [");
+        for (files.items, 0..) |f, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print("\"{s}\"", .{f});
+        }
+        try writer.print("], \"dir\": \"{s}\", \"count\": {d}}}", .{ dir_path, files.items.len });
+
+        return buf.toOwnedSlice();
+    }
+
+    fn handleCollectionRun(self: *ApiHandler, body: ?[]const u8) ![]const u8 {
+        const json_body = body orelse return try self.jsonError("Request body is required");
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json_body, .{}) catch {
+            return try self.jsonError("Invalid JSON in request body");
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+        const dir_val = root.get("dir") orelse return try self.jsonError("'dir' field is required");
+        if (dir_val != .string) return try self.jsonError("'dir' must be a string");
+
+        const dir_path = dir_val.string;
+
+        // List .volt files in the directory
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+            return try self.jsonError("Cannot open directory");
+        };
+        defer dir.close();
+
+        var volt_files = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (volt_files.items) |f| self.allocator.free(f);
+            volt_files.deinit();
+        }
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file and mem.endsWith(u8, entry.name, ".volt")) {
+                if (mem.startsWith(u8, entry.name, "_")) continue; // Skip _env.volt etc.
+                try volt_files.append(try self.allocator.dupe(u8, entry.name));
+            }
+        }
+
+        // Run each .volt file
+        var buf = std.ArrayList(u8).init(self.allocator);
+        const writer = buf.writer();
+
+        try writer.writeAll("{\"results\": [");
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+
+        for (volt_files.items, 0..) |file_name, i| {
+            if (i > 0) try writer.writeAll(",");
+
+            // Try to read and parse the .volt file
+            const file_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ dir_path, file_name });
+            defer self.allocator.free(file_path);
+
+            const file_content = blk: {
+                const file = std.fs.cwd().openFile(file_path, .{}) catch {
+                    try writer.print("{{\"file\": \"{s}\", \"status\": \"error\", \"error\": \"Cannot open file\"}}", .{file_name});
+                    failed += 1;
+                    continue;
+                };
+                defer file.close();
+                break :blk file.readToEndAlloc(self.allocator, 1024 * 1024) catch {
+                    try writer.print("{{\"file\": \"{s}\", \"status\": \"error\", \"error\": \"Cannot read file\"}}", .{file_name});
+                    failed += 1;
+                    continue;
+                };
+            };
+            defer self.allocator.free(file_content);
+
+            // Parse the .volt file
+            var request = VoltFile.parse(self.allocator, file_content) catch {
+                try writer.print("{{\"file\": \"{s}\", \"status\": \"error\", \"error\": \"Parse error\"}}", .{file_name});
+                failed += 1;
+                continue;
+            };
+            defer request.deinit();
+
+            // Execute the request
+            const config = HttpClient.ClientConfig{};
+            var response = HttpClient.execute(self.allocator, &request, config) catch {
+                try writer.print("{{\"file\": \"{s}\", \"method\": \"{s}\", \"url\": \"{s}\", \"status\": \"error\", \"error\": \"Request failed\"}}", .{
+                    file_name, request.method.toString(), request.url,
+                });
+                failed += 1;
+                continue;
+            };
+            defer response.deinit();
+
+            // Record in history
+            self.history.record(&request, &response, null) catch {};
+
+            const success = response.status_code >= 200 and response.status_code < 400;
+            if (success) {
+                passed += 1;
+            } else {
+                failed += 1;
+            }
+
+            try writer.print("{{\"file\": \"{s}\", \"method\": \"{s}\", \"url\": \"{s}\", \"status_code\": {d}, \"time_ms\": {d}, \"status\": \"{s}\"}}", .{
+                file_name,
+                request.method.toString(),
+                request.url,
+                response.status_code,
+                response.timing.total_ms,
+                if (success) "pass" else "fail",
+            });
+        }
+
+        try writer.print("], \"total\": {d}, \"passed\": {d}, \"failed\": {d}}}", .{
+            volt_files.items.len, passed, failed,
+        });
+
+        return buf.toOwnedSlice();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

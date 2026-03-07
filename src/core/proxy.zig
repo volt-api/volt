@@ -262,7 +262,165 @@ pub fn generateTestsFromCaptures(allocator: Allocator, captures: []const Capture
     return buf.toOwnedSlice();
 }
 
+// ── HTTPS CONNECT Tunnel Support ─────────────────────────────────────
+//
+// Handles the HTTP CONNECT method for proxying HTTPS traffic.
+// The proxy establishes a TCP tunnel between client and server,
+// allowing encrypted traffic to pass through.
+
+pub const ConnectRequest = struct {
+    host: []const u8,
+    port: u16,
+};
+
+/// Parse an HTTP CONNECT request to extract the target host and port.
+/// CONNECT requests use the format: CONNECT host:port HTTP/1.1
+pub fn parseConnectRequest(raw_request: []const u8) ?ConnectRequest {
+    if (raw_request.len == 0) return null;
+
+    // Parse the request line
+    var lines = mem.splitSequence(u8, raw_request, "\n");
+    const request_line = lines.next() orelse return null;
+    const trimmed = mem.trimRight(u8, request_line, "\r");
+
+    // Expect: CONNECT host:port HTTP/1.1
+    var parts = mem.splitScalar(u8, trimmed, ' ');
+    const method = parts.next() orelse return null;
+    if (!mem.eql(u8, method, "CONNECT")) return null;
+
+    const authority = parts.next() orelse return null;
+
+    // Split host:port
+    if (mem.lastIndexOf(u8, authority, ":")) |colon| {
+        const host = authority[0..colon];
+        const port_str = authority[colon + 1 ..];
+        const port = std.fmt.parseInt(u16, port_str, 10) catch return null;
+        return .{ .host = host, .port = port };
+    }
+
+    // No port specified, default to 443 for HTTPS
+    return .{ .host = authority, .port = 443 };
+}
+
+/// Build the 200 Connection Established response for a successful CONNECT tunnel.
+pub fn buildConnectResponse() []const u8 {
+    return "HTTP/1.1 200 Connection Established\r\n\r\n";
+}
+
+/// Build a 502 Bad Gateway response for a failed CONNECT tunnel.
+pub fn buildConnectErrorResponse() []const u8 {
+    return "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\nFailed to connect to upstream server.\r\n";
+}
+
+/// Check if a raw HTTP request is a CONNECT request.
+pub fn isConnectRequest(raw_request: []const u8) bool {
+    return mem.startsWith(u8, raw_request, "CONNECT ");
+}
+
+pub const TunnelConfig = struct {
+    /// Buffer size for forwarding data between client and server
+    buffer_size: usize = 8192,
+    /// Timeout for tunnel inactivity in milliseconds
+    idle_timeout_ms: u32 = 30_000,
+    /// Whether to log CONNECT requests
+    log_connects: bool = true,
+};
+
+/// Capture metadata about a CONNECT tunnel for logging.
+pub const TunnelCapture = struct {
+    host: []const u8,
+    port: u16,
+    timestamp: i64,
+    bytes_sent: usize,
+    bytes_received: usize,
+    duration_ms: f64,
+};
+
+/// Format a CONNECT tunnel capture for display.
+pub fn formatTunnelLog(allocator: Allocator, tunnel: TunnelCapture) ![]const u8 {
+    var buf = std.ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    try writer.print("[{d}] \x1b[35mCONNECT\x1b[0m {s}:{d}", .{ tunnel.timestamp, tunnel.host, tunnel.port });
+    try writer.print(" \x1b[2m({d:.0}ms, {d} sent, {d} recv)\x1b[0m", .{
+        tunnel.duration_ms,
+        tunnel.bytes_sent,
+        tunnel.bytes_received,
+    });
+
+    return buf.toOwnedSlice();
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
+
+test "parse CONNECT request" {
+    const raw = "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n";
+    const result = parseConnectRequest(raw).?;
+
+    try std.testing.expectEqualStrings("api.example.com", result.host);
+    try std.testing.expectEqual(@as(u16, 443), result.port);
+}
+
+test "parse CONNECT request with non-standard port" {
+    const raw = "CONNECT staging.example.com:8443 HTTP/1.1\r\n\r\n";
+    const result = parseConnectRequest(raw).?;
+
+    try std.testing.expectEqualStrings("staging.example.com", result.host);
+    try std.testing.expectEqual(@as(u16, 8443), result.port);
+}
+
+test "parse CONNECT request without port" {
+    const raw = "CONNECT example.com HTTP/1.1\r\n\r\n";
+    const result = parseConnectRequest(raw).?;
+
+    try std.testing.expectEqualStrings("example.com", result.host);
+    try std.testing.expectEqual(@as(u16, 443), result.port);
+}
+
+test "parse CONNECT rejects non-CONNECT methods" {
+    const raw = "GET /path HTTP/1.1\r\n\r\n";
+    try std.testing.expect(parseConnectRequest(raw) == null);
+}
+
+test "parse CONNECT rejects empty" {
+    try std.testing.expect(parseConnectRequest("") == null);
+}
+
+test "isConnectRequest detection" {
+    try std.testing.expect(isConnectRequest("CONNECT example.com:443 HTTP/1.1\r\n\r\n"));
+    try std.testing.expect(!isConnectRequest("GET / HTTP/1.1\r\n\r\n"));
+    try std.testing.expect(!isConnectRequest("POST /api HTTP/1.1\r\n\r\n"));
+}
+
+test "buildConnectResponse format" {
+    const response = buildConnectResponse();
+    try std.testing.expect(mem.indexOf(u8, response, "200 Connection Established") != null);
+    try std.testing.expect(mem.endsWith(u8, response, "\r\n\r\n"));
+}
+
+test "buildConnectErrorResponse format" {
+    const response = buildConnectErrorResponse();
+    try std.testing.expect(mem.indexOf(u8, response, "502 Bad Gateway") != null);
+}
+
+test "format tunnel log" {
+    const tunnel = TunnelCapture{
+        .host = "api.example.com",
+        .port = 443,
+        .timestamp = 1700000000,
+        .bytes_sent = 1024,
+        .bytes_received = 4096,
+        .duration_ms = 150.5,
+    };
+
+    const log = try formatTunnelLog(std.testing.allocator, tunnel);
+    defer std.testing.allocator.free(log);
+
+    try std.testing.expect(mem.indexOf(u8, log, "CONNECT") != null);
+    try std.testing.expect(mem.indexOf(u8, log, "api.example.com:443") != null);
+    try std.testing.expect(mem.indexOf(u8, log, "1024 sent") != null);
+    try std.testing.expect(mem.indexOf(u8, log, "4096 recv") != null);
+}
 
 test "capture to volt file" {
     var capture = CapturedRequest.init(std.testing.allocator);

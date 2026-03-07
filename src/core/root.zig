@@ -54,6 +54,7 @@ pub const InsomniaImport = @import("insomnia_import.zig");
 pub const Secrets = @import("secrets.zig");
 pub const Watch = @import("watch.zig");
 pub const CI = @import("ci.zig");
+pub const CiDashboard = @import("ci_dashboard.zig");
 pub const Share = @import("share.zig");
 pub const Mqtt = @import("mqtt.zig");
 pub const SocketIO = @import("socketio.zig");
@@ -62,16 +63,32 @@ pub const Themes = @import("themes.zig");
 pub const Plugin = @import("plugin.zig");
 pub const OpenAPIDesigner = @import("openapi_designer.zig");
 pub const Replay = @import("replay.zig");
+pub const Jwt = @import("jwt.zig");
+pub const XPath = @import("xpath.zig");
 
 // Collection & protocol modules
 pub const CollectionOrganizer = @import("collection_organizer.zig");
 pub const H2 = @import("h2.zig");
+pub const H3 = @import("h3.zig");
+pub const Quic = @import("quic.zig");
 pub const OAuthFlow = @import("oauth_flow.zig");
 pub const ResponseViewer = @import("response_viewer.zig");
+
+// HTTPie-competitive modules
+pub const Session = @import("session.zig");
+pub const Download = @import("download.zig");
+pub const Quick = @import("quick.zig");
 
 // Web UI modules
 pub const WebServer = @import("web_server.zig");
 pub const WebApi = @import("web_api.zig");
+
+// Hoppscotch-competitive modules
+pub const AwsAuth = @import("aws_auth.zig");
+pub const HawkAuth = @import("hawk_auth.zig");
+pub const ScriptEngine = @import("script_engine.zig");
+pub const Collaboration = @import("collaboration.zig");
+pub const TeamSecrets = @import("team_secrets.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

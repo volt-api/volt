@@ -24,6 +24,12 @@ pub const Response = struct {
     redirect_count: u16 = 0,
     truncated: bool = false,
     total_size: usize = 0,
+    /// The HTTP version used for this request/response.
+    http_version: HttpVersion = .http1_1,
+    /// H3 frame bytes for the request (populated when http_version == .http3).
+    h3_frame_bytes: usize = 0,
+    /// Set by execute()/executeStreaming() when header strings are heap-allocated.
+    _owns_header_strings: bool = false,
 
     pub fn init(allocator: Allocator) Response {
         return .{
@@ -33,6 +39,13 @@ pub const Response = struct {
     }
 
     pub fn deinit(self: *Response) void {
+        if (self._owns_header_strings) {
+            const alloc = self.headers.allocator;
+            for (self.headers.items) |h| {
+                alloc.free(h.name);
+                alloc.free(h.value);
+            }
+        }
         self.headers.deinit();
         self.body.deinit();
     }
@@ -67,6 +80,9 @@ pub const HttpVersion = enum {
 
 // ── HTTP Client ─────────────────────────────────────────────────────────
 
+const Config = @import("config.zig");
+pub const SslVersion = Config.SslVersion;
+
 pub const ClientConfig = struct {
     timeout_ms: u32 = 30_000,
     max_redirects: u8 = 10,
@@ -79,6 +95,14 @@ pub const ClientConfig = struct {
     max_response_size: usize = 50 * 1024 * 1024,
     stream_threshold: usize = 5 * 1024 * 1024,
     http_version: HttpVersion = .http1_1,
+    // TLS configurability
+    ssl_version: ?SslVersion = null,
+    ciphers: ?[]const u8 = null,
+    // Chunked transfer and compression
+    chunked: bool = false,
+    compress: bool = false,
+    // Streaming output
+    streaming: bool = false,
 };
 
 pub const RequestError = error{
@@ -110,6 +134,80 @@ pub fn execute(
     var response = Response.init(allocator);
     errdefer response.deinit();
 
+    // Track the HTTP version used for this request
+    response.http_version = config.http_version;
+
+    // HTTP/3 over QUIC: send the request via real QUIC/UDP transport
+    // using the quic module for TLS 1.3 + AEAD packet protection.
+    if (config.http_version == .http3) {
+        const H3 = @import("h3.zig");
+        const QuicClient = @import("quic/client.zig");
+
+        // Build H3 request headers
+        var h3_headers = std.ArrayList(H3.Header).init(allocator);
+        defer h3_headers.deinit();
+        for (request.headers.items) |h| {
+            h3_headers.append(.{ .name = h.name, .value = h.value }) catch {};
+        }
+
+        // Parse authority and port from URL
+        var authority: []const u8 = "localhost";
+        var h3_port: u16 = 443;
+        if (mem.indexOf(u8, request.url, "://")) |se| {
+            const after = request.url[se + 3 ..];
+            const slash = mem.indexOf(u8, after, "/") orelse after.len;
+            authority = after[0..slash];
+            // Check for explicit port
+            if (mem.indexOf(u8, authority, ":")) |colon| {
+                h3_port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch 443;
+                authority = authority[0..colon];
+            }
+        }
+
+        // Parse path from URL
+        var path: []const u8 = "/";
+        if (mem.indexOf(u8, request.url, "://")) |se| {
+            const after = request.url[se + 3 ..];
+            if (mem.indexOf(u8, after, "/")) |slash| {
+                path = after[slash..];
+            }
+        }
+
+        // Send HTTP/3 request over QUIC
+        const h3_response = QuicClient.sendRequest(
+            authority,
+            h3_port,
+            request.method.toString(),
+            path,
+            h3_headers.items,
+            request.body,
+            allocator,
+        ) catch {
+            // Fall through to HTTP/1.1 if QUIC fails
+            response.http_version = .http1_1;
+            return execute(allocator, request, ClientConfig{
+                .timeout_ms = config.timeout_ms,
+                .max_redirects = config.max_redirects,
+                .follow_redirects = config.follow_redirects,
+                .verify_ssl = config.verify_ssl,
+                .http_version = .http1_1,
+            });
+        };
+
+        // Map H3 response to our Response struct
+        var h3_resp = h3_response;
+        defer h3_resp.deinit();
+        response.status_code = h3_resp.status_code;
+        response.http_version = .http3;
+        for (h3_resp.headers.items) |h| {
+            response.headers.append(.{ .name = h.name, .value = h.value }) catch {};
+        }
+        response.body.appendSlice(h3_resp.body.items) catch {};
+        response.size_bytes = response.body.items.len;
+        response.total_size = response.size_bytes;
+        return response;
+    }
+
     const uri = std.Uri.parse(request.url) catch return RequestError.InvalidUrl;
 
     var client = std.http.Client{ .allocator = allocator };
@@ -118,6 +216,22 @@ pub fn execute(
     // Build headers
     var headers_buf: [32]std.http.Header = undefined;
     var header_count: usize = 0;
+    // Track heap-allocated auth headers for cleanup after request completes
+    var hawk_auth_alloc: ?[]const u8 = null;
+    defer if (hawk_auth_alloc) |v| allocator.free(v);
+    // AWS auth headers are duped; track them for cleanup
+    var aws_auth_allocs: [8][2][]const u8 = undefined;
+    var aws_auth_count: usize = 0;
+    defer for (aws_auth_allocs[0..aws_auth_count]) |a| {
+        allocator.free(a[0]);
+        allocator.free(a[1]);
+    };
+
+    // Auth buffers at function scope so they remain valid until request completes
+    var bearer_buf: [512]u8 = undefined;
+    var cred_buf: [256]u8 = undefined;
+    var b64_buf: [512]u8 = undefined;
+    var basic_buf: [600]u8 = undefined;
 
     // Add request headers
     for (request.headers.items) |h| {
@@ -133,8 +247,7 @@ pub fn execute(
     if (request.auth.type == .bearer) {
         if (request.auth.token) |token| {
             if (header_count < headers_buf.len) {
-                var auth_buf: [512]u8 = undefined;
-                const auth_value = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch "Bearer ";
+                const auth_value = std.fmt.bufPrint(&bearer_buf, "Bearer {s}", .{token}) catch "Bearer ";
                 headers_buf[header_count] = .{
                     .name = "Authorization",
                     .value = auth_value,
@@ -146,12 +259,9 @@ pub fn execute(
         if (request.auth.username != null and request.auth.password != null) {
             // Basic auth - Base64 encode username:password
             if (header_count < headers_buf.len) {
-                var cred_buf: [256]u8 = undefined;
                 const cred_str = std.fmt.bufPrint(&cred_buf, "{s}:{s}", .{ request.auth.username.?, request.auth.password.? }) catch "invalid";
-                var b64_buf: [512]u8 = undefined;
                 const encoded = std.base64.standard.Encoder.encode(&b64_buf, cred_str);
-                var auth_header_buf: [600]u8 = undefined;
-                const auth_value = std.fmt.bufPrint(&auth_header_buf, "Basic {s}", .{encoded}) catch "Basic ";
+                const auth_value = std.fmt.bufPrint(&basic_buf, "Basic {s}", .{encoded}) catch "Basic ";
                 headers_buf[header_count] = .{
                     .name = "Authorization",
                     .value = auth_value,
@@ -180,6 +290,76 @@ pub fn execute(
                     .value = "Digest (credentials)",
                 };
                 header_count += 1;
+            }
+        }
+    } else if (request.auth.type == .aws) {
+        // AWS SigV4 — generate Authorization header via aws_auth module
+        if (request.auth.access_key != null and request.auth.secret_key != null) {
+            const AwsAuth = @import("aws_auth.zig");
+            const aws_config = AwsAuth.AwsAuthConfig{
+                .access_key = request.auth.access_key.?,
+                .secret_key = request.auth.secret_key.?,
+                .region = request.auth.region orelse "us-east-1",
+                .service = request.auth.service orelse "execute-api",
+                .session_token = request.auth.session_token,
+            };
+            var signed = AwsAuth.signRequest(
+                allocator,
+                aws_config,
+                request.method.toString(),
+                request.url,
+                &[_][2][]const u8{},
+                request.body,
+            ) catch null;
+            if (signed) |*s| {
+                defer s.deinit();
+                for (s.headers.items) |h| {
+                    if (header_count < headers_buf.len) {
+                        // Dupe the header values since signed will be deinit'd
+                        const name_d = allocator.dupe(u8, h[0]) catch continue;
+                        const value_d = allocator.dupe(u8, h[1]) catch {
+                            allocator.free(name_d);
+                            continue;
+                        };
+                        headers_buf[header_count] = .{ .name = name_d, .value = value_d };
+                        if (aws_auth_count < aws_auth_allocs.len) {
+                            aws_auth_allocs[aws_auth_count] = .{ name_d, value_d };
+                            aws_auth_count += 1;
+                        }
+                        header_count += 1;
+                    }
+                }
+            }
+        }
+    } else if (request.auth.type == .hawk) {
+        // Hawk Authentication — generate Authorization header
+        if (request.auth.hawk_id != null and request.auth.hawk_key != null) {
+            const HawkAuth = @import("hawk_auth.zig");
+            const hawk_config = HawkAuth.HawkConfig{
+                .id = request.auth.hawk_id.?,
+                .key = request.auth.hawk_key.?,
+                .algorithm = if (request.auth.hawk_algorithm) |a| HawkAuth.HawkConfig.Algorithm.fromString(a) else .sha256,
+                .ext = request.auth.hawk_ext,
+            };
+            const content_type = for (request.headers.items) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "content-type")) break h.value;
+            } else null;
+            const hawk_header = HawkAuth.generateHeader(
+                allocator,
+                hawk_config,
+                request.method.toString(),
+                request.url,
+                request.body,
+                content_type,
+            ) catch null;
+            if (hawk_header) |hh| {
+                if (header_count < headers_buf.len) {
+                    headers_buf[header_count] = .{ .name = "Authorization", .value = hh };
+                    header_count += 1;
+                    hawk_auth_alloc = hh;
+                } else {
+                    allocator.free(hh);
+                }
             }
         }
     }
@@ -232,14 +412,20 @@ pub fn execute(
     // Read status
     response.status_code = @intFromEnum(req.response.status);
 
-    // Read response headers
+    // Read response headers — dupe strings since they point into stack buffer
     var header_iter = req.response.iterateHeaders();
     while (header_iter.next()) |h| {
+        const name_copy = allocator.dupe(u8, h.name) catch return RequestError.OutOfMemory;
+        const value_copy = allocator.dupe(u8, h.value) catch {
+            allocator.free(name_copy);
+            return RequestError.OutOfMemory;
+        };
         response.headers.append(.{
-            .name = h.name,
-            .value = h.value,
+            .name = name_copy,
+            .value = value_copy,
         }) catch return RequestError.OutOfMemory;
     }
+    response._owns_header_strings = true;
 
     // Read body with large response handling
     const body_data = req.reader().readAllAlloc(allocator, config.max_response_size) catch
@@ -260,7 +446,7 @@ pub fn execute(
     response.timing.total_ms = @as(f64, @floatFromInt(end_time - start_time)) / 1_000_000.0;
     response.size_bytes = response.body.items.len;
     if (response.total_size == 0) response.total_size = response.size_bytes;
-    response.redirect_count = if (config.follow_redirects) @intCast(@min(@as(u16, config.max_redirects), 10)) else 0;
+    response.redirect_count = 0; // actual count not tracked by std.http.Client
 
     return response;
 }
@@ -271,7 +457,7 @@ pub fn formatResponse(response: *const Response, allocator: Allocator) ![]const 
     const writer = buf.writer();
 
     // Status line
-    try writer.print("HTTP {d} {s}\n", .{ response.status_code, httpStatusText(response.status_code) });
+    try writer.print("{s} {d} {s}\n", .{ response.http_version.toString(), response.status_code, httpStatusText(response.status_code) });
     try writer.print("Time: {d:.1}ms | Size: {s}\n", .{ response.timing.total_ms, formatBytes(response.size_bytes) });
     try writer.writeAll("\n");
 
@@ -294,9 +480,14 @@ pub fn formatResponse(response: *const Response, allocator: Allocator) ![]const 
 }
 
 fn formatBytes(bytes: usize) []const u8 {
+    if (bytes == 0) return "0 B";
     if (bytes < 1024) return "< 1 KB";
-    if (bytes < 1024 * 1024) return "KB";
-    return "MB";
+    if (bytes < 10 * 1024) return "< 10 KB";
+    if (bytes < 100 * 1024) return "< 100 KB";
+    if (bytes < 1024 * 1024) return "< 1 MB";
+    if (bytes < 10 * 1024 * 1024) return "< 10 MB";
+    if (bytes < 100 * 1024 * 1024) return "< 100 MB";
+    return "> 100 MB";
 }
 
 pub fn httpStatusText(code: u16) []const u8 {
@@ -386,6 +577,277 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
     }
     return false;
+}
+
+// ── Streaming Execution ─────────────────────────────────────────────────
+
+/// Execute a request and stream body chunks directly to the provided writer.
+/// Returns Response with empty body (since it was streamed to writer).
+pub fn executeStreaming(
+    allocator: Allocator,
+    request: *const VoltFile.VoltRequest,
+    config: ClientConfig,
+    writer: anytype,
+) RequestError!Response {
+    var response = Response.init(allocator);
+    errdefer response.deinit();
+
+    response.http_version = config.http_version;
+
+    // HTTP/3 over QUIC for streaming requests
+    if (config.http_version == .http3) {
+        const H3 = @import("h3.zig");
+        const QuicClient = @import("quic/client.zig");
+
+        var h3_headers = std.ArrayList(H3.Header).init(allocator);
+        defer h3_headers.deinit();
+        for (request.headers.items) |h| {
+            h3_headers.append(.{ .name = h.name, .value = h.value }) catch {};
+        }
+
+        var authority: []const u8 = "localhost";
+        var h3_port: u16 = 443;
+        if (mem.indexOf(u8, request.url, "://")) |se| {
+            const after = request.url[se + 3 ..];
+            const slash = mem.indexOf(u8, after, "/") orelse after.len;
+            authority = after[0..slash];
+            if (mem.indexOf(u8, authority, ":")) |colon| {
+                h3_port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch 443;
+                authority = authority[0..colon];
+            }
+        }
+
+        var path: []const u8 = "/";
+        if (mem.indexOf(u8, request.url, "://")) |se| {
+            const after = request.url[se + 3 ..];
+            if (mem.indexOf(u8, after, "/")) |slash| {
+                path = after[slash..];
+            }
+        }
+
+        const h3_response = QuicClient.sendRequest(
+            authority,
+            h3_port,
+            request.method.toString(),
+            path,
+            h3_headers.items,
+            request.body,
+            allocator,
+        ) catch {
+            response.http_version = .http1_1;
+            return executeStreaming(allocator, request, ClientConfig{
+                .timeout_ms = config.timeout_ms,
+                .http_version = .http1_1,
+            }, writer);
+        };
+
+        var h3_resp = h3_response;
+        defer h3_resp.deinit();
+        response.status_code = h3_resp.status_code;
+        response.http_version = .http3;
+        for (h3_resp.headers.items) |h| {
+            response.headers.append(.{ .name = h.name, .value = h.value }) catch {};
+        }
+        // Stream body to writer
+        if (h3_resp.body.items.len > 0) {
+            writer.writeAll(h3_resp.body.items) catch {};
+            response.size_bytes = h3_resp.body.items.len;
+        }
+        return response;
+    }
+
+    const uri = std.Uri.parse(request.url) catch return RequestError.InvalidUrl;
+
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    // Build headers (same as execute)
+    var headers_buf: [32]std.http.Header = undefined;
+    var header_count: usize = 0;
+    // Auth buffer at function scope so it remains valid until request completes
+    var auth_buf: [512]u8 = undefined;
+
+    for (request.headers.items) |h| {
+        if (header_count >= headers_buf.len) break;
+        headers_buf[header_count] = .{ .name = h.name, .value = h.value };
+        header_count += 1;
+    }
+
+    if (request.auth.type == .bearer) {
+        if (request.auth.token) |token| {
+            if (header_count < headers_buf.len) {
+                const auth_value = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch "Bearer ";
+                headers_buf[header_count] = .{ .name = "Authorization", .value = auth_value };
+                header_count += 1;
+            }
+        }
+    }
+
+    const extra_headers = headers_buf[0..header_count];
+
+    const http_method: std.http.Method = switch (request.method) {
+        .GET => .GET,
+        .POST => .POST,
+        .PUT => .PUT,
+        .PATCH => .PATCH,
+        .DELETE => .DELETE,
+        .HEAD => .HEAD,
+        .OPTIONS => .OPTIONS,
+    };
+
+    const start_time = std.time.nanoTimestamp();
+
+    var server_header_buf_stream: [16384]u8 = undefined;
+    var req = client.open(http_method, uri, .{
+        .server_header_buffer = &server_header_buf_stream,
+        .extra_headers = extra_headers,
+        .redirect_behavior = if (config.follow_redirects) @enumFromInt(config.max_redirects) else .unhandled,
+    }) catch return RequestError.ConnectionFailed;
+    defer req.deinit();
+
+    if (request.body) |body| {
+        req.transfer_encoding = .{ .content_length = body.len };
+        req.send() catch return RequestError.ConnectionFailed;
+        req.writer().writeAll(body) catch return RequestError.ConnectionFailed;
+        req.finish() catch return RequestError.ConnectionFailed;
+    } else {
+        req.send() catch return RequestError.ConnectionFailed;
+        req.finish() catch return RequestError.ConnectionFailed;
+    }
+
+    req.wait() catch return RequestError.ConnectionFailed;
+
+    response.status_code = @intFromEnum(req.response.status);
+
+    // Read response headers — dupe strings since they point into stack buffer
+    var header_iter = req.response.iterateHeaders();
+    while (header_iter.next()) |h| {
+        const name_copy = allocator.dupe(u8, h.name) catch return RequestError.OutOfMemory;
+        const value_copy = allocator.dupe(u8, h.value) catch {
+            allocator.free(name_copy);
+            return RequestError.OutOfMemory;
+        };
+        response.headers.append(.{ .name = name_copy, .value = value_copy }) catch return RequestError.OutOfMemory;
+    }
+    response._owns_header_strings = true;
+
+    // Stream body in chunks
+    var buf: [8192]u8 = undefined;
+    var total_streamed: usize = 0;
+    while (true) {
+        const n = req.reader().read(&buf) catch break;
+        if (n == 0) break;
+        writer.writeAll(buf[0..n]) catch break;
+        total_streamed += n;
+    }
+
+    const end_time = std.time.nanoTimestamp();
+    response.timing.total_ms = @as(f64, @floatFromInt(end_time - start_time)) / 1_000_000.0;
+    response.size_bytes = total_streamed;
+
+    return response;
+}
+
+// ── SOCKS5 Protocol ────────────────────────────────────────────────────
+
+pub const SocksConfig = struct {
+    host: []const u8,
+    port: u16,
+    username: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+};
+
+/// Parse a SOCKS5 proxy URL: socks5://[user:pass@]host:port
+pub fn parseSocksUrl(url: []const u8) ?SocksConfig {
+    const prefix = "socks5://";
+    if (!mem.startsWith(u8, url, prefix)) return null;
+    var rest = url[prefix.len..];
+
+    var username: ?[]const u8 = null;
+    var password: ?[]const u8 = null;
+
+    // Check for user:pass@
+    if (mem.indexOf(u8, rest, "@")) |at_pos| {
+        const auth = rest[0..at_pos];
+        if (mem.indexOf(u8, auth, ":")) |colon| {
+            username = auth[0..colon];
+            password = auth[colon + 1 ..];
+        }
+        rest = rest[at_pos + 1 ..];
+    }
+
+    // Parse host:port
+    if (mem.lastIndexOf(u8, rest, ":")) |colon| {
+        const host = rest[0..colon];
+        const port = std.fmt.parseInt(u16, rest[colon + 1 ..], 10) catch return null;
+        return SocksConfig{
+            .host = host,
+            .port = port,
+            .username = username,
+            .password = password,
+        };
+    }
+
+    return null;
+}
+
+/// Perform SOCKS5 handshake over a connected stream.
+/// Returns true on success. The stream is then tunneled to target_host:target_port.
+pub fn socks5Handshake(
+    stream_writer: anytype,
+    stream_reader: anytype,
+    config: *const SocksConfig,
+    target_host: []const u8,
+    target_port: u16,
+) !bool {
+    // 1. Greeting: offer auth methods based on whether credentials are provided
+    if (config.username != null and config.password != null) {
+        // Offer no-auth (0x00) and username/password (0x02)
+        try stream_writer.writeAll(&[_]u8{ 0x05, 0x02, 0x00, 0x02 });
+    } else {
+        // Offer no-auth only
+        try stream_writer.writeAll(&[_]u8{ 0x05, 0x01, 0x00 });
+    }
+
+    // 2. Server response: version + chosen method
+    var greeting_resp: [2]u8 = undefined;
+    const read_n = try stream_reader.read(&greeting_resp);
+    if (read_n < 2 or greeting_resp[0] != 0x05) return false;
+
+    // Handle username/password auth if server selected method 0x02
+    if (greeting_resp[1] == 0x02) {
+        const user = config.username orelse return false;
+        const pass = config.password orelse return false;
+        // Sub-negotiation: version=1, ulen, username, plen, password
+        try stream_writer.writeByte(0x01);
+        try stream_writer.writeByte(@intCast(user.len));
+        try stream_writer.writeAll(user);
+        try stream_writer.writeByte(@intCast(pass.len));
+        try stream_writer.writeAll(pass);
+        // Read auth response
+        var auth_resp: [2]u8 = undefined;
+        const auth_n = try stream_reader.read(&auth_resp);
+        if (auth_n < 2 or auth_resp[1] != 0x00) return false;
+    } else if (greeting_resp[1] != 0x00) {
+        return false; // No acceptable auth method
+    }
+
+    // 3. CONNECT request
+    // Version=5, CMD=CONNECT(1), RSV=0, ATYP=DOMAINNAME(3)
+    try stream_writer.writeAll(&[_]u8{ 0x05, 0x01, 0x00, 0x03 });
+    // Domain length + domain
+    try stream_writer.writeByte(@intCast(target_host.len));
+    try stream_writer.writeAll(target_host);
+    // Port (big endian)
+    try stream_writer.writeByte(@intCast(target_port >> 8));
+    try stream_writer.writeByte(@intCast(target_port & 0xFF));
+
+    // 4. Read CONNECT response (at least 10 bytes for IPv4)
+    var connect_resp: [10]u8 = undefined;
+    const resp_n = try stream_reader.read(&connect_resp);
+    if (resp_n < 4 or connect_resp[0] != 0x05 or connect_resp[1] != 0x00) return false;
+
+    return true;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -487,4 +949,33 @@ test "client config defaults" {
     try std.testing.expectEqual(@as(usize, 50 * 1024 * 1024), config.max_response_size);
     try std.testing.expectEqual(@as(usize, 5 * 1024 * 1024), config.stream_threshold);
     try std.testing.expect(config.http_version == .http1_1);
+    try std.testing.expect(config.ssl_version == null);
+    try std.testing.expect(config.ciphers == null);
+    try std.testing.expect(!config.chunked);
+    try std.testing.expect(!config.compress);
+    try std.testing.expect(!config.streaming);
+}
+
+test "parse socks5 url" {
+    const config = parseSocksUrl("socks5://proxy.example.com:1080").?;
+    try std.testing.expectEqualStrings("proxy.example.com", config.host);
+    try std.testing.expectEqual(@as(u16, 1080), config.port);
+    try std.testing.expect(config.username == null);
+}
+
+test "parse socks5 url with auth" {
+    const config = parseSocksUrl("socks5://user:pass@proxy.example.com:1080").?;
+    try std.testing.expectEqualStrings("proxy.example.com", config.host);
+    try std.testing.expectEqual(@as(u16, 1080), config.port);
+    try std.testing.expectEqualStrings("user", config.username.?);
+    try std.testing.expectEqualStrings("pass", config.password.?);
+}
+
+test "parse socks5 url invalid" {
+    try std.testing.expect(parseSocksUrl("http://proxy.example.com:1080") == null);
+    try std.testing.expect(parseSocksUrl("socks5://noport") == null);
+}
+
+test "ssl version enum" {
+    try std.testing.expect(SslVersion.tls1_2 != SslVersion.tls1_3);
 }

@@ -5,18 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Volt — API Client</title>
     <link rel="stylesheet" href="/style.css">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#22d3ee">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="description" content="The API client that respects you. Offline-first, Git-native, Zero bloat.">
 </head>
 <body>
 
 <!-- ── Toolbar ────────────────────────────────────────────────────── -->
 <header class="toolbar">
     <div class="toolbar-left">
-        <span class="logo">&#9889; Volt</span>
-        <span class="version">v1.0.0</span>
+        <span class="logo"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="vertical-align:-2px;margin-right:4px"><path d="M8 1L10.5 6.5L14 7.5L11 11L12 15L8 12.5L4 15L5 11L2 7.5L5.5 6.5L8 1Z" fill="currentColor" opacity="0.9"/><path d="M8 3L9.8 7L8 12L6.2 7L8 3Z" fill="currentColor"/></svg>Volt</span>
+        <span class="version">v1.1.0</span>
     </div>
     <div class="toolbar-center">
+        <label class="workspace-selector">
+            <span class="ws-label">Workspace</span>
+            <select id="workspace-select">
+                <option value="">Personal</option>
+            </select>
+        </label>
+        <span class="toolbar-divider"></span>
         <label class="env-selector">
-            <span class="env-label">Env:</span>
+            <span class="env-label">Env</span>
             <select id="env-select">
                 <option value="">No Environment</option>
             </select>
@@ -49,6 +61,7 @@
         <div class="sidebar-tabs">
             <button class="sidebar-tab active" data-tab="collections">Collections</button>
             <button class="sidebar-tab" data-tab="history-tab">History</button>
+            <button class="sidebar-tab" data-tab="protocols-tab">Protocols</button>
         </div>
         <div id="collection-tree" class="sidebar-content"></div>
         <div class="sidebar-toggle" id="sidebar-toggle" title="Toggle Sidebar">&lsaquo;</div>
@@ -78,6 +91,8 @@
                 <button class="req-tab" data-tab="headers">Headers</button>
                 <button class="req-tab" data-tab="body">Body</button>
                 <button class="req-tab" data-tab="auth">Auth</button>
+                <button class="req-tab" data-tab="pre-script">Pre-Script</button>
+                <button class="req-tab" data-tab="post-script">Post-Script</button>
                 <button class="req-tab" data-tab="tests">Tests</button>
             </div>
 
@@ -119,9 +134,35 @@
                             <option value="bearer">Bearer Token</option>
                             <option value="basic">Basic Auth</option>
                             <option value="apikey">API Key</option>
+                            <option value="digest">Digest Auth</option>
+                            <option value="aws">AWS Signature</option>
+                            <option value="hawk">Hawk Auth</option>
+                            <option value="oauth_cc">OAuth 2.0 (Client Credentials)</option>
+                            <option value="oauth_password">OAuth 2.0 (Password)</option>
+                            <option value="oauth_implicit">OAuth 2.0 (Implicit)</option>
                         </select>
                     </div>
                     <div id="auth-fields" class="auth-fields"></div>
+                </div>
+
+                <!-- Pre-Script Panel -->
+                <div class="req-panel" id="panel-pre-script">
+                    <p class="panel-hint">Runs before the request is sent. Use to set variables, generate tokens, etc.</p>
+                    <textarea id="pre-script-editor" class="body-editor script-editor" placeholder="# Set a dynamic variable
+env.set token {{$timestamp}}
+# Log values
+log Starting request..."></textarea>
+                </div>
+
+                <!-- Post-Script Panel -->
+                <div class="req-panel" id="panel-post-script">
+                    <p class="panel-hint">Runs after the response is received. Use to extract values, run assertions, chain requests.</p>
+                    <textarea id="post-script-editor" class="body-editor script-editor" placeholder="# Extract a value from response
+extract $.data.id as user_id
+# Assert status
+assert.status 200
+# Chain to next request
+chain get-user-details.volt"></textarea>
                 </div>
 
                 <!-- Tests Panel -->
@@ -182,11 +223,83 @@
 
             <!-- Empty state -->
             <div class="response-empty" id="response-empty">
-                <div class="empty-icon">&#9889;</div>
+                <div class="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" opacity="0.25">
+                        <path d="M24 4L30 18L44 20L34 30L36 44L24 38L12 44L14 30L4 20L18 18L24 4Z" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                        <path d="M24 12L27 22L24 36L21 22L24 12Z" fill="currentColor" opacity="0.3"/>
+                    </svg>
+                </div>
                 <p>Enter a URL and hit Send to get started</p>
                 <p class="muted">Ctrl+Enter to send &bull; Ctrl+S to save &bull; Ctrl+L to clear</p>
             </div>
         </section>
+
+        <!-- ── WebSocket Panel ──────────────────────────────────────── -->
+        <section class="protocol-panel" id="ws-panel" style="display:none">
+            <div class="protocol-header">
+                <h3>WebSocket</h3>
+                <span class="ws-status-badge disconnected" id="ws-status">Disconnected</span>
+            </div>
+            <div class="protocol-url-bar">
+                <input type="text" id="ws-url" class="url-input" placeholder="ws://localhost:8080/ws">
+                <button id="ws-connect-btn" class="btn-send">Connect</button>
+                <button id="ws-disconnect-btn" class="btn-secondary" disabled>Disconnect</button>
+            </div>
+            <div class="ws-messages" id="ws-messages">
+                <div class="ws-empty">Connect to a WebSocket server to see messages</div>
+            </div>
+            <div class="ws-send-bar">
+                <input type="text" id="ws-message-input" class="url-input" placeholder="Type a message...">
+                <button id="ws-send-btn" class="btn-send" disabled>Send</button>
+            </div>
+        </section>
+
+        <!-- ── SSE Panel ────────────────────────────────────────────── -->
+        <section class="protocol-panel" id="sse-panel" style="display:none">
+            <div class="protocol-header">
+                <h3>Server-Sent Events</h3>
+                <span class="sse-status-badge disconnected" id="sse-status">Disconnected</span>
+            </div>
+            <div class="protocol-url-bar">
+                <input type="text" id="sse-url" class="url-input" placeholder="https://api.example.com/events">
+                <button id="sse-connect-btn" class="btn-send">Connect</button>
+                <button id="sse-disconnect-btn" class="btn-secondary" disabled>Disconnect</button>
+            </div>
+            <div class="sse-events" id="sse-events">
+                <div class="sse-empty">Connect to an SSE endpoint to see events</div>
+            </div>
+        </section>
+
+        <!-- ── Collection Runner Panel ──────────────────────────────── -->
+        <section class="protocol-panel" id="runner-panel" style="display:none">
+            <div class="protocol-header">
+                <h3>Collection Runner</h3>
+                <span class="runner-status" id="runner-status">Idle</span>
+            </div>
+            <div class="runner-config">
+                <div class="runner-input-row">
+                    <label>Directory:</label>
+                    <input type="text" id="runner-dir" class="url-input" placeholder="." value=".">
+                </div>
+                <div class="runner-input-row">
+                    <label>Environment:</label>
+                    <select id="runner-env" class="runner-env-select">
+                        <option value="">No Environment</option>
+                    </select>
+                </div>
+                <div class="runner-actions">
+                    <button id="runner-run-btn" class="btn-send">Run Collection</button>
+                </div>
+            </div>
+            <div class="runner-progress-container" id="runner-progress-container" style="display:none">
+                <div class="runner-progress-bar">
+                    <div class="runner-progress-fill" id="runner-progress-fill"></div>
+                </div>
+                <span class="runner-progress-text" id="runner-progress-text">0/0</span>
+            </div>
+            <div class="runner-results" id="runner-results"></div>
+        </section>
+
     </main>
 </div>
 

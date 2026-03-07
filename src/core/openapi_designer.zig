@@ -203,7 +203,7 @@ pub fn generateVoltFiles(allocator: Allocator, spec: *const OpenAPISpec) std.Arr
     coll_writer.writeAll("\n---\n\n") catch {};
     coll_writer.print("BASE_URL {s}\n", .{base_url}) catch {};
     files.append(.{
-        .path = "_collection.volt",
+        .path = allocator.dupe(u8, "_collection.volt") catch "_collection.volt",
         .content = coll_buf.toOwnedSlice() catch "",
     }) catch {};
 
@@ -214,7 +214,7 @@ pub fn generateVoltFiles(allocator: Allocator, spec: *const OpenAPISpec) std.Arr
     env_writer.writeAll("---\n\n") catch {};
     env_writer.print("base_url={s}\n", .{base_url}) catch {};
     files.append(.{
-        .path = "_env.volt",
+        .path = allocator.dupe(u8, "_env.volt") catch "_env.volt",
         .content = env_buf.toOwnedSlice() catch "",
     }) catch {};
 
@@ -792,10 +792,7 @@ test "generateVoltFiles creates files for each endpoint" {
     defer {
         for (files.items) |f| {
             std.testing.allocator.free(f.content);
-            // path is either a static string or allocated
-            if (!mem.eql(u8, f.path, "_collection.volt") and !mem.eql(u8, f.path, "_env.volt")) {
-                std.testing.allocator.free(f.path);
-            }
+            std.testing.allocator.free(f.path);
         }
         files.deinit();
     }

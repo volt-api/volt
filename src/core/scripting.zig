@@ -3,6 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const VoltFile = @import("volt_file.zig");
 const HttpClient = @import("http_client.zig");
+const Environment = @import("environment.zig");
 
 // ── Scripting Engine ────────────────────────────────────────────────────
 // A simple expression-based scripting language for pre/post request scripts.
@@ -18,6 +19,7 @@ const HttpClient = @import("http_client.zig");
 pub const ScriptContext = struct {
     allocator: Allocator,
     variables: std.StringHashMap([]const u8),
+    env_mgr: ?*Environment.EnvManager,
     request: ?*VoltFile.VoltRequest,
     response: ?*const HttpClient.Response,
     output: std.ArrayList(u8),
@@ -33,6 +35,7 @@ pub const ScriptContext = struct {
         return .{
             .allocator = allocator,
             .variables = std.StringHashMap([]const u8).init(allocator),
+            .env_mgr = null,
             .request = null,
             .response = null,
             .output = std.ArrayList(u8).init(allocator),
@@ -47,10 +50,17 @@ pub const ScriptContext = struct {
     }
 
     pub fn setVar(self: *ScriptContext, key: []const u8, value: []const u8) !void {
+        if (self.env_mgr) |mgr| {
+            try mgr.setRuntimeVar(key, value);
+            return;
+        }
         try self.variables.put(key, value);
     }
 
     pub fn getVar(self: *const ScriptContext, key: []const u8) ?[]const u8 {
+        if (self.env_mgr) |mgr| {
+            return mgr.runtime_vars.get(key);
+        }
         return self.variables.get(key);
     }
 
@@ -81,7 +91,7 @@ pub const ScriptContext = struct {
         }
 
         // Check variables
-        return self.variables.get(field);
+        return self.getVar(field);
     }
 
     pub fn getStatusCode(self: *const ScriptContext) ?u16 {
@@ -147,12 +157,21 @@ pub fn executeScript(
         } else if (mem.eql(u8, cmd, "extract")) {
             // extract <var> <jsonpath>
             const var_name = parts.next() orelse continue;
-            const json_path = parts.rest();
+            var json_path = parts.rest();
+
+            // Common usage is "body.<path>"; scripting extracts from the response body.
+            if (mem.startsWith(u8, json_path, "body.")) {
+                json_path = json_path["body.".len..];
+            }
 
             if (ctx.response) |resp| {
                 const body = resp.bodySlice();
                 if (extractJsonField(body, json_path)) |value| {
-                    try ctx.setVar(var_name, value);
+                    var trimmed_val = mem.trim(u8, value, " \t\r\n");
+                    if (trimmed_val.len >= 2 and trimmed_val[0] == '"' and trimmed_val[trimmed_val.len - 1] == '"') {
+                        trimmed_val = trimmed_val[1 .. trimmed_val.len - 1];
+                    }
+                    try ctx.setVar(var_name, trimmed_val);
                 }
             }
         } else if (mem.eql(u8, cmd, "header")) {

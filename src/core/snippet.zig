@@ -8,6 +8,27 @@ const VoltFile = @import("volt_file.zig");
 // Extends the basic exporter with more languages including Ruby, PHP,
 // C#, Rust, Java, Swift, Kotlin, Dart, R, HTTPie, wget, and PowerShell.
 
+/// Escape double quotes and backslashes for embedding in a "..." string literal.
+fn escapeForStringLiteral(allocator: Allocator, input: []const u8) ![]const u8 {
+    var count: usize = 0;
+    for (input) |c| {
+        if (c == '"' or c == '\\') count += 1;
+    }
+    if (count == 0) return allocator.dupe(u8, input);
+
+    var buf = try allocator.alloc(u8, input.len + count);
+    var i: usize = 0;
+    for (input) |c| {
+        if (c == '\\' or c == '"') {
+            buf[i] = '\\';
+            i += 1;
+        }
+        buf[i] = c;
+        i += 1;
+    }
+    return buf;
+}
+
 pub const Language = enum {
     ruby,
     php,
@@ -77,6 +98,7 @@ pub fn generateSnippet(allocator: Allocator, request: *const VoltFile.VoltReques
 /// Export as Ruby using Net::HTTP
 pub fn exportRuby(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("require 'net/http'\n");
@@ -129,6 +151,7 @@ pub fn exportRuby(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
             }
         },
         .digest => {},
+        .aws, .hawk, .oauth_cc, .oauth_password, .oauth_implicit => {},
         .none => {},
     }
 
@@ -147,6 +170,7 @@ pub fn exportRuby(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 /// Export as PHP using curl functions
 pub fn exportPhp(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("<?php\n\n");
@@ -214,6 +238,7 @@ pub fn exportPhp(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]
 /// Export as C# using HttpClient
 pub fn exportCSharp(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("using System;\n");
@@ -225,8 +250,9 @@ pub fn exportCSharp(request: *const VoltFile.VoltRequest, allocator: Allocator) 
     try writer.writeAll("    static async Task Main(string[] args)\n    {\n");
     try writer.writeAll("        using var client = new HttpClient();\n\n");
 
-    // Headers
+    // Headers (skip Content-Type — set via StringContent constructor)
     for (request.headers.items) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "content-type")) continue;
         try writer.print("        client.DefaultRequestHeaders.Add(\"{s}\", \"{s}\");\n", .{ h.name, h.value });
     }
 
@@ -269,7 +295,9 @@ pub fn exportCSharp(request: *const VoltFile.VoltRequest, allocator: Allocator) 
             .xml => "application/xml",
             else => "text/plain",
         };
-        try writer.print("        var content = new StringContent(\"{s}\", Encoding.UTF8, \"{s}\");\n", .{ body, content_type });
+        const escaped_body = escapeForStringLiteral(allocator, body) catch body;
+        defer if (escaped_body.ptr != body.ptr) allocator.free(escaped_body);
+        try writer.print("        var content = new StringContent(\"{s}\", Encoding.UTF8, \"{s}\");\n", .{ escaped_body, content_type });
 
         if (request.method == .POST or request.method == .PUT or request.method == .PATCH) {
             try writer.print("        var response = await client.{s}(\"{s}\", content);\n", .{ method_name, request.url });
@@ -302,6 +330,7 @@ pub fn exportCSharp(request: *const VoltFile.VoltRequest, allocator: Allocator) 
 /// Export as Rust using reqwest
 pub fn exportRust(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("use reqwest;\n\n");
@@ -342,6 +371,7 @@ pub fn exportRust(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
             }
         },
         .digest => {},
+        .aws, .hawk, .oauth_cc, .oauth_password, .oauth_implicit => {},
         .none => {},
     }
 
@@ -368,6 +398,7 @@ pub fn exportRust(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 /// Export as Java using HttpClient (Java 11+)
 pub fn exportJava(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("import java.net.URI;\n");
@@ -384,7 +415,9 @@ pub fn exportJava(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 
     // Method and body
     if (request.body) |body| {
-        try writer.print("            .method(\"{s}\", HttpRequest.BodyPublishers.ofString(\"{s}\"))\n", .{ request.method.toString(), body });
+        const escaped_body = escapeForStringLiteral(allocator, body) catch body;
+        defer if (escaped_body.ptr != body.ptr) allocator.free(escaped_body);
+        try writer.print("            .method(\"{s}\", HttpRequest.BodyPublishers.ofString(\"{s}\"))\n", .{ request.method.toString(), escaped_body });
     } else {
         if (request.method == .GET) {
             try writer.writeAll("            .GET()\n");
@@ -434,6 +467,7 @@ pub fn exportJava(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 /// Export as Swift using URLSession
 pub fn exportSwift(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("import Foundation\n\n");
@@ -468,7 +502,9 @@ pub fn exportSwift(request: *const VoltFile.VoltRequest, allocator: Allocator) !
 
     // Body
     if (request.body) |body| {
-        try writer.print("request.httpBody = \"{s}\".data(using: .utf8)\n", .{body});
+        const escaped_body = escapeForStringLiteral(allocator, body) catch body;
+        defer if (escaped_body.ptr != body.ptr) allocator.free(escaped_body);
+        try writer.print("request.httpBody = \"{s}\".data(using: .utf8)\n", .{escaped_body});
     }
 
     try writer.writeAll("\nlet task = URLSession.shared.dataTask(with: request) { data, response, error in\n");
@@ -492,6 +528,7 @@ pub fn exportSwift(request: *const VoltFile.VoltRequest, allocator: Allocator) !
 /// Export as Kotlin using OkHttp
 pub fn exportKotlin(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("import okhttp3.OkHttpClient\n");
@@ -513,7 +550,9 @@ pub fn exportKotlin(request: *const VoltFile.VoltRequest, allocator: Allocator) 
             .xml => "application/xml",
             else => "text/plain",
         };
-        try writer.print("    val body = \"{s}\".toRequestBody(\"{s}\".toMediaType())\n\n", .{ body, media_type });
+        const escaped_body = escapeForStringLiteral(allocator, body) catch body;
+        defer if (escaped_body.ptr != body.ptr) allocator.free(escaped_body);
+        try writer.print("    val body = \"{s}\".toRequestBody(\"{s}\".toMediaType())\n\n", .{ escaped_body, media_type });
     }
 
     try writer.writeAll("    val request = Request.Builder()\n");
@@ -568,6 +607,7 @@ pub fn exportKotlin(request: *const VoltFile.VoltRequest, allocator: Allocator) 
 /// Export as Dart using http package
 pub fn exportDart(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("import 'package:http/http.dart' as http;\n");
@@ -631,6 +671,7 @@ pub fn exportDart(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 /// Export as R using httr library
 pub fn exportR(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("library(httr)\n\n");
@@ -694,6 +735,7 @@ pub fn exportR(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]co
 /// Export as HTTPie command
 pub fn exportHttpie(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     const method_lower = methodToLower(request.method);
@@ -730,6 +772,7 @@ pub fn exportHttpie(request: *const VoltFile.VoltRequest, allocator: Allocator) 
             }
         },
         .digest => {},
+        .aws, .hawk, .oauth_cc, .oauth_password, .oauth_implicit => {},
         .none => {},
     }
 
@@ -745,6 +788,7 @@ pub fn exportHttpie(request: *const VoltFile.VoltRequest, allocator: Allocator) 
 /// Export as wget command
 pub fn exportWget(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     try writer.writeAll("wget");
@@ -787,6 +831,7 @@ pub fn exportWget(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
             }
         },
         .digest => {},
+        .aws, .hawk, .oauth_cc, .oauth_password, .oauth_implicit => {},
         .none => {},
     }
 
@@ -804,6 +849,7 @@ pub fn exportWget(request: *const VoltFile.VoltRequest, allocator: Allocator) ![
 /// Export as PowerShell using Invoke-RestMethod
 pub fn exportPowerShell(request: *const VoltFile.VoltRequest, allocator: Allocator) ![]const u8 {
     var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
     const writer = buf.writer();
 
     // Headers

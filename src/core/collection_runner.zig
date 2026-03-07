@@ -16,6 +16,7 @@ const CookieJar = @import("cookie_jar.zig");
 // - Summary report
 
 pub const RunResult = struct {
+    allocator: Allocator,
     file: []const u8,
     method: VoltFile.Method,
     url: []const u8,
@@ -23,9 +24,12 @@ pub const RunResult = struct {
     timing_ms: f64,
     passed: bool,
     test_results: std.ArrayList(TestResult),
+    file_owned: bool,
+    url_owned: bool,
 
     pub fn init(allocator: Allocator) RunResult {
         return .{
+            .allocator = allocator,
             .file = "",
             .method = .GET,
             .url = "",
@@ -33,10 +37,18 @@ pub const RunResult = struct {
             .timing_ms = 0,
             .passed = true,
             .test_results = std.ArrayList(TestResult).init(allocator),
+            .file_owned = false,
+            .url_owned = false,
         };
     }
 
     pub fn deinit(self: *RunResult) void {
+        if (self.file_owned) self.allocator.free(self.file);
+        if (self.url_owned) self.allocator.free(self.url);
+
+        for (self.test_results.items) |tr| {
+            self.allocator.free(tr.expression);
+        }
         self.test_results.deinit();
     }
 };
@@ -87,6 +99,15 @@ pub fn runCollection(
     var result = CollectionResult.init(allocator);
     const stdout = std.io.getStdOut().writer();
 
+    const dir_path_norm = blk: {
+        const trimmed = mem.trimRight(u8, dir_path, "/\\");
+        if (trimmed.len == 0) break :blk ".";
+        break :blk trimmed;
+    };
+
+    // Ensure clean slate for chaining.
+    env_mgr.clearRuntimeVars();
+
     // Collect and sort .volt files
     var files = std.ArrayList([]const u8).init(allocator);
     defer {
@@ -94,7 +115,7 @@ pub fn runCollection(
         files.deinit();
     }
 
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+    var dir = std.fs.cwd().openDir(dir_path_norm, .{ .iterate = true }) catch {
         return result;
     };
     defer dir.close();
@@ -118,11 +139,7 @@ pub fn runCollection(
         return result;
     }
 
-    try stdout.print("\x1b[1mRunning collection:\x1b[0m {s} ({d} requests)\n\n", .{ dir_path, files.items.len });
-
-    // Shared script context for variable extraction between requests
-    var script_ctx = Scripting.ScriptContext.init(allocator);
-    defer script_ctx.deinit();
+    try stdout.print("\x1b[1mRunning collection:\x1b[0m {s} ({d} requests)\n\n", .{ dir_path_norm, files.items.len });
 
     // Cookie jar shared across requests in the collection
     var cookie_jar = CookieJar.CookieJar.init(allocator);
@@ -152,9 +169,10 @@ pub fn runCollection(
 
     for (files.items) |filename| {
         var run_result = RunResult.init(allocator);
-        run_result.file = filename;
+        run_result.file = try allocator.dupe(u8, filename);
+        run_result.file_owned = true;
 
-        const full_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, filename }) catch continue;
+        const full_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path_norm, filename }) catch continue;
         defer allocator.free(full_path);
 
         const file = std.fs.cwd().openFile(full_path, .{}) catch {
@@ -183,12 +201,80 @@ pub fn runCollection(
             request.auth = collection_auth;
         }
 
-        // Interpolate URL with environment + accumulated variables
-        const resolved_url = env_mgr.interpolate(request.url, &script_ctx.variables, allocator) catch null;
-        defer if (resolved_url) |ru| allocator.free(ru);
-        if (resolved_url) |ru| request.url = ru;
+        // Script context (pre/post) participates in runtime variable propagation.
+        var script_ctx = Scripting.ScriptContext.init(allocator);
+        defer script_ctx.deinit();
+        script_ctx.env_mgr = env_mgr;
 
-        // Apply cookies from jar to request
+        // Execute pre-script first so it can set runtime variables used in interpolation.
+        if (request.pre_script) |pre| {
+            script_ctx.request = &request;
+            Scripting.executeScript(&script_ctx, pre) catch {};
+        }
+
+        // Interpolate request fields (URL, headers, auth, body) using:
+        // request.variables → env_mgr.runtime_vars → active env → global → dynamic.
+        var transient_allocs = std.ArrayList([]const u8).init(allocator);
+        defer {
+            for (transient_allocs.items) |s| allocator.free(s);
+            transient_allocs.deinit();
+        }
+
+        const resolved_url = try env_mgr.interpolate(request.url, &request.variables, allocator);
+        try transient_allocs.append(resolved_url);
+        request.url = resolved_url;
+
+        // Interpolate headers
+        var resolved_headers = std.ArrayList(VoltFile.Header).init(allocator);
+        defer resolved_headers.deinit();
+        for (request.headers.items) |h| {
+            const rn = try env_mgr.interpolate(h.name, &request.variables, allocator);
+            const rv = try env_mgr.interpolate(h.value, &request.variables, allocator);
+            try transient_allocs.append(rn);
+            try transient_allocs.append(rv);
+            try resolved_headers.append(.{ .name = rn, .value = rv });
+        }
+        request.headers.clearRetainingCapacity();
+        for (resolved_headers.items) |h| {
+            try request.headers.append(h);
+        }
+
+        // Interpolate auth fields
+        if (request.auth.token) |t| {
+            const rt = try env_mgr.interpolate(t, &request.variables, allocator);
+            try transient_allocs.append(rt);
+            request.auth.token = rt;
+        }
+        if (request.auth.username) |u| {
+            const ru = try env_mgr.interpolate(u, &request.variables, allocator);
+            try transient_allocs.append(ru);
+            request.auth.username = ru;
+        }
+        if (request.auth.password) |p| {
+            const rp = try env_mgr.interpolate(p, &request.variables, allocator);
+            try transient_allocs.append(rp);
+            request.auth.password = rp;
+        }
+        if (request.auth.key_name) |kn| {
+            const rkn = try env_mgr.interpolate(kn, &request.variables, allocator);
+            try transient_allocs.append(rkn);
+            request.auth.key_name = rkn;
+        }
+        if (request.auth.key_value) |kv| {
+            const rkv = try env_mgr.interpolate(kv, &request.variables, allocator);
+            try transient_allocs.append(rkv);
+            request.auth.key_value = rkv;
+        }
+
+        // Interpolate body
+        if (request.body) |body| {
+            const rb = try env_mgr.interpolate(body, &request.variables, allocator);
+            if (request.body_owned) allocator.free(body);
+            request.body = rb;
+            request.body_owned = true;
+        }
+
+        // Apply cookies from jar to request (after URL resolved)
         const cookie_header = cookie_jar.getCookieHeader(request.url) catch null;
         defer if (cookie_header) |ch| allocator.free(ch);
         if (cookie_header) |ch| {
@@ -196,13 +282,8 @@ pub fn runCollection(
         }
 
         run_result.method = request.method;
-        run_result.url = request.url;
-
-        // Execute pre-script
-        if (request.pre_script) |pre| {
-            script_ctx.request = &request;
-            Scripting.executeScript(&script_ctx, pre) catch {};
-        }
+        run_result.url = try allocator.dupe(u8, request.url);
+        run_result.url_owned = true;
 
         // Print progress
         try stdout.print("  \x1b[36m{s}\x1b[0m {s} ... ", .{ request.method.toString(), filename });
@@ -251,7 +332,7 @@ pub fn runCollection(
                 run_result.passed = false;
             }
             try run_result.test_results.append(.{
-                .expression = t.field,
+                .expression = try allocator.dupe(u8, t.field),
                 .passed = passed,
             });
         }

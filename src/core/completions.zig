@@ -39,6 +39,7 @@ const commands = [_][]const u8{
     "har",        "grpc",      "secrets",   "watch",      "ci",
     "share",      "mqtt",      "socketio",  "proxy",      "theme",
     "plugin",     "design",    "replay",    "login",      "search",
+    "quick",
 };
 
 const command_descriptions = [_][]const u8{
@@ -82,6 +83,7 @@ const command_descriptions = [_][]const u8{
     "Replay history entries with diff",
     "OAuth browser login with PKCE",
     "Search collection requests",
+    "HTTPie-style shorthand requests",
 };
 
 const file_commands = [_][]const u8{
@@ -147,8 +149,9 @@ pub fn generateBashCompletions(allocator: Allocator) ![]const u8 {
     try writer.writeAll("            return 0\n");
     try writer.writeAll("            ;;\n");
 
-    // File-taking commands
+    // File-taking commands (skip export — already handled above with format completions)
     for (file_commands) |cmd| {
+        if (mem.eql(u8, cmd, "export")) continue;
         try writer.print("        {s})\n", .{cmd});
         try writer.writeAll("            COMPREPLY=($(compgen -f -X '!*.volt' -- \"${cur}\"))\n");
         try writer.writeAll("            return 0\n");
@@ -372,7 +375,7 @@ pub fn generatePowerShellCompletions(allocator: Allocator) ![]const u8 {
 
 fn buildCommandList() []const u8 {
     // Return a static space-separated list of commands for fish completions
-    return "run test bench mock export collection graphql generate init import env history lint diff version help workflow validate docs completions monitor cache ws sse auth";
+    return "run test bench mock export collection graphql generate init import env history lint diff version help workflow validate docs completions monitor cache ws sse auth quick";
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
