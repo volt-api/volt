@@ -205,8 +205,8 @@ Generated fresh on every request:
 |----------|--------|
 | `{{$uuid}}` / `{{$guid}}` | `550e8400-e29b-41d4-a716-446655440000` |
 | `{{$timestamp}}` | `1708300800` (Unix seconds) |
-| `{{$isoTimestamp}}` / `{{$isoDate}}` | `2025-02-19T08:00:00Z` |
-| `{{$date}}` | `2025-02-19` |
+| `{{$isoTimestamp}}` / `{{$isoDate}}` | `2026-03-07T08:00:00Z` |
+| `{{$date}}` | `2026-03-07` |
 | `{{$randomInt}}` | `7291` (0–9999) |
 | `{{$randomFloat}}` | `0.4832` (0–1) |
 | `{{$randomEmail}}` | `user4832@example.com` |
@@ -287,6 +287,8 @@ One command. Your collections become plain text files in git.
 | Resume download | `volt run file.volt --download --continue` |
 | Named sessions | `volt run file.volt --session=myapi` |
 | Offline / dry run | `volt run file.volt --offline` |
+| JWT inspection | `volt jwt decode <token>` |
+| XPath queries | `volt run file.volt` (use `$.xpath(...)` in tests) |
 | Initialize project | `volt init` |
 | Lint .volt files | `volt lint api/` |
 | Terminal UI | `volt` (no arguments) |
@@ -394,7 +396,7 @@ volt login --logout                     # Clear tokens
 |----------|---------|--------|
 | HTTP/HTTPS | `volt run request.volt` | Stable |
 | GraphQL | `volt graphql query.volt` | Stable |
-| WebSocket | `volt ws wss://echo.websocket.org` | Stable |
+| WebSocket | `volt ws wss://ws.example.com/socket` | Stable |
 | SSE | `volt sse https://api.example.com/events` | Stable |
 | gRPC | `volt grpc list service.proto` | Beta |
 | HTTP/2 | Frame building, HPACK compression, stream management | Beta — TLS negotiation WIP |
@@ -619,13 +621,13 @@ Volt is production-ready for HTTP requests, testing, collections, import/export,
 - **gRPC**: Proto parsing and `.volt` generation work. Actual calls depend on HTTP/2 over TLS (see above).
 - **OAuth browser flow**: PKCE and token exchange work. Localhost callback server not yet automatic — generates URL for manual flow.
 - **Plugin system**: Manifest and discovery work. `volt plugin install <url>` not yet implemented.
-- **No GUI**: Terminal-first (CLI + TUI + web UI via `volt ui`). No native desktop app.
+- **No native desktop app**: Terminal-first (CLI + TUI + web UI via `volt ui`). No Electron wrapper.
 
 ## Roadmap
 
 - [ ] Full HTTP/2 over TLS (ALPN negotiation)
 - [ ] CI results dashboard (web — first paid feature)
-- [ ] Team secrets vault
+- [x] Team secrets vault (E2E encrypted, multi-member)
 - [ ] VS Code extension (syntax highlighting)
 - [x] HTTP/3 (QUIC) support
 
