@@ -292,7 +292,9 @@ pub fn hasChanges(allocator: Allocator, state: *WatchState, files: []const []con
         if (state.last_modified.get(file_path)) |stored_mtime| {
             if (current_mtime != stored_mtime) {
                 changed = true;
-                state.last_modified.put(file_path, current_mtime) catch {};
+                state.last_modified.put(file_path, current_mtime) catch |err| {
+                    std.debug.print("warning: watch: mtime update failed: {s}\n", .{@errorName(err)});
+                };
             }
         } else {
             // New file, store its mtime

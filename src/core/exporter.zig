@@ -27,7 +27,9 @@ pub fn exportOpenAPI(
     for (requests) |req| {
         const base = extractBaseUrl(req.url);
         if (base.len > 0) {
-            servers.put(base, {}) catch {};
+            servers.put(base, {}) catch |err| {
+                std.debug.print("warning: exporter: server dedup put failed: {s}\n", .{@errorName(err)});
+            };
         }
     }
 
@@ -48,7 +50,9 @@ pub fn exportOpenAPI(
 
         // Only emit the path key once; subsequent methods go under the same path
         if (!seen_paths.contains(path)) {
-            seen_paths.put(path, {}) catch {};
+            seen_paths.put(path, {}) catch |err| {
+                std.debug.print("warning: exporter: path dedup put failed: {s}\n", .{@errorName(err)});
+            };
             try writer.print("  {s}:\n", .{path});
         }
         try writer.print("    {s}:\n", .{method_lower});

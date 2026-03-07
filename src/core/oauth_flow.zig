@@ -502,7 +502,9 @@ pub const CallbackServer = struct {
 
         // Send response to browser
         const response_html = buildCallbackResponse(parsed.code != null and parsed.error_msg == null);
-        connection.stream.writeAll(response_html) catch {};
+        connection.stream.writeAll(response_html) catch |err| {
+            std.debug.print("warning: oauth_flow: callback response write failed: {s}\n", .{@errorName(err)});
+        };
 
         // Dupe strings to heap so they outlive the stack buffer
         return CallbackResult{
@@ -536,7 +538,9 @@ pub fn runCallbackFlow(allocator: Allocator, flow: *AuthFlowState) ![]const u8 {
     const browser_cmd = getBrowserCommand(flow.authorization_url);
     const argv: []const []const u8 = &.{ browser_cmd.prog, browser_cmd.args[0], browser_cmd.args[1] };
     var child = std.process.Child.init(argv, allocator);
-    child.spawn() catch {};
+    child.spawn() catch |err| {
+        std.debug.print("warning: oauth_flow: browser launch failed: {s}\n", .{@errorName(err)});
+    };
 
     // Wait for callback (returned strings are heap-allocated)
     const result = try server.waitForCallback();

@@ -91,14 +91,14 @@ pub fn compareResponses(allocator: Allocator, original_body: []const u8, replay_
                 .old_value = orig_trimmed,
                 .new_value = replay_trimmed,
                 .change_type = .unchanged,
-            }) catch {};
+            }) catch {}; // output only
         } else {
             changes.append(.{
                 .field = "body",
                 .old_value = orig_trimmed,
                 .new_value = replay_trimmed,
                 .change_type = .modified,
-            }) catch {};
+            }) catch {}; // output only
         }
     }
 
@@ -131,14 +131,14 @@ pub fn compareHeaders(allocator: Allocator, original_headers: []const u8, replay
                     .old_value = orig_val,
                     .new_value = replay_val,
                     .change_type = .unchanged,
-                }) catch {};
+                }) catch {}; // output only
             } else {
                 changes.append(.{
                     .field = key,
                     .old_value = orig_val,
                     .new_value = replay_val,
                     .change_type = .modified,
-                }) catch {};
+                }) catch {}; // output only
             }
         } else {
             changes.append(.{
@@ -146,7 +146,7 @@ pub fn compareHeaders(allocator: Allocator, original_headers: []const u8, replay
                 .old_value = orig_val,
                 .new_value = "",
                 .change_type = .removed,
-            }) catch {};
+            }) catch {}; // output only
         }
     }
 
@@ -160,7 +160,7 @@ pub fn compareHeaders(allocator: Allocator, original_headers: []const u8, replay
                 .old_value = "",
                 .new_value = entry.value_ptr.*,
                 .change_type = .added,
-            }) catch {};
+            }) catch {}; // output only
         }
     }
 
@@ -292,14 +292,14 @@ fn compareJsonFields(allocator: Allocator, original: []const u8, replay: []const
                     .old_value = orig_val,
                     .new_value = replay_val,
                     .change_type = .unchanged,
-                }) catch {};
+                }) catch {}; // output only
             } else {
                 changes.append(.{
                     .field = key,
                     .old_value = orig_val,
                     .new_value = replay_val,
                     .change_type = .modified,
-                }) catch {};
+                }) catch {}; // output only
             }
         } else {
             changes.append(.{
@@ -307,7 +307,7 @@ fn compareJsonFields(allocator: Allocator, original: []const u8, replay: []const
                 .old_value = orig_val,
                 .new_value = "",
                 .change_type = .removed,
-            }) catch {};
+            }) catch {}; // output only
         }
     }
 
@@ -321,7 +321,7 @@ fn compareJsonFields(allocator: Allocator, original: []const u8, replay: []const
                 .old_value = "",
                 .new_value = entry.value_ptr.*,
                 .change_type = .added,
-            }) catch {};
+            }) catch {}; // output only
         }
     }
 }
@@ -377,7 +377,7 @@ fn extractTopLevelKeys(json: []const u8, map: *std.StringHashMap([]const u8)) vo
             advance = end;
         }
 
-        map.put(key, value) catch {};
+        map.put(key, value) catch {}; // output only
 
         // Move past this key-value pair
         const consumed = @intFromPtr(value_data.ptr) - @intFromPtr(remaining.ptr) + advance;

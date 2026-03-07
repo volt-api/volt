@@ -275,7 +275,9 @@ pub const TeamVault = struct {
     /// Save vault metadata to a directory (member list and encrypted secrets).
     pub fn save(self: *const TeamVault, dir_path: []const u8) !void {
         // Ensure directory exists
-        std.fs.cwd().makePath(dir_path) catch {};
+        std.fs.cwd().makePath(dir_path) catch |err| {
+            std.debug.print("warning: team_secrets: failed to create vault directory: {s}\n", .{@errorName(err)});
+        };
 
         // Save members file
         var members_buf = std.ArrayList(u8).init(self.allocator);
@@ -637,7 +639,9 @@ test "serialization roundtrip" {
     const test_dir = ".volt-workspace/test-secrets-vault";
 
     // Clean up test directory first
-    std.fs.cwd().deleteTree(test_dir) catch {};
+    std.fs.cwd().deleteTree(test_dir) catch |err| {
+        std.debug.print("warning: team_secrets: test cleanup (pre) failed: {s}\n", .{@errorName(err)});
+    };
 
     {
         var vault = TeamVault.init(allocator);
@@ -665,5 +669,7 @@ test "serialization roundtrip" {
     }
 
     // Clean up
-    std.fs.cwd().deleteTree(test_dir) catch {};
+    std.fs.cwd().deleteTree(test_dir) catch |err| {
+        std.debug.print("warning: team_secrets: test cleanup (post) failed: {s}\n", .{@errorName(err)});
+    };
 }

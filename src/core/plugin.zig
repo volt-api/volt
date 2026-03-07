@@ -187,7 +187,9 @@ pub fn executePlugin(allocator: Allocator, manifest: *const PluginManifest, inpu
     // Write input to stdin and close it
     if (child.stdin) |stdin| {
         var stdin_file = stdin;
-        stdin_file.writeAll(input_json) catch {};
+        stdin_file.writeAll(input_json) catch |err| {
+            std.debug.print("warning: plugin: failed to write stdin: {s}\n", .{@errorName(err)});
+        };
         stdin_file.close();
         child.stdin = null;
     }
@@ -196,7 +198,9 @@ pub fn executePlugin(allocator: Allocator, manifest: *const PluginManifest, inpu
     var stdout_buf = std.ArrayList(u8).init(allocator);
     if (child.stdout) |stdout| {
         const reader = stdout.reader();
-        reader.readAllArrayList(&stdout_buf, 1024 * 1024) catch {};
+        reader.readAllArrayList(&stdout_buf, 1024 * 1024) catch |err| {
+            std.debug.print("warning: plugin: failed to read stdout: {s}\n", .{@errorName(err)});
+        };
     }
 
     _ = child.wait() catch {
@@ -227,14 +231,24 @@ pub fn formatPluginList(allocator: Allocator, plugins: []const PluginManifest) [
         writer.print("     {s}\n", .{plugin.description}) catch continue;
         writer.writeAll("     Hooks: ") catch continue;
         for (plugin.hooks.items, 0..) |hook, j| {
-            if (j > 0) writer.writeAll(", ") catch {};
-            writer.print("{s}", .{hook.toString()}) catch {};
+            if (j > 0) writer.writeAll(", ") catch |err| {
+                std.debug.print("warning: plugin: format separator write failed: {s}\n", .{@errorName(err)});
+            };
+            writer.print("{s}", .{hook.toString()}) catch |err| {
+                std.debug.print("warning: plugin: format hook write failed: {s}\n", .{@errorName(err)});
+            };
         }
-        writer.writeAll("\n") catch {};
-        writer.print("     Executable: {s}\n\n", .{plugin.executable}) catch {};
+        writer.writeAll("\n") catch |err| {
+            std.debug.print("warning: plugin: format newline write failed: {s}\n", .{@errorName(err)});
+        };
+        writer.print("     Executable: {s}\n\n", .{plugin.executable}) catch |err| {
+            std.debug.print("warning: plugin: format executable write failed: {s}\n", .{@errorName(err)});
+        };
     }
 
-    writer.print("{d} plugin(s) installed.\n", .{plugins.len}) catch {};
+    writer.print("{d} plugin(s) installed.\n", .{plugins.len}) catch |err| {
+        std.debug.print("warning: plugin: format summary write failed: {s}\n", .{@errorName(err)});
+    };
 
     return buf.toOwnedSlice() catch return "";
 }
@@ -351,14 +365,18 @@ pub fn installFromPath(allocator: Allocator, source_path: []const u8, plugin_dir
     defer manifest.deinit();
 
     // Create plugin directory
-    std.fs.cwd().makePath(plugin_dir) catch {};
+    std.fs.cwd().makePath(plugin_dir) catch |err| {
+        std.debug.print("warning: plugin: failed to create plugin directory '{s}': {s}\n", .{ plugin_dir, @errorName(err) });
+    };
 
     const dest_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ plugin_dir, manifest.name }) catch {
         return .{ .success = false, .name = "", .version = "", .message = "Failed to create install path" };
     };
     defer allocator.free(dest_path);
 
-    std.fs.cwd().makePath(dest_path) catch {};
+    std.fs.cwd().makePath(dest_path) catch |err| {
+        std.debug.print("warning: plugin: failed to create destination directory '{s}': {s}\n", .{ dest_path, @errorName(err) });
+    };
 
     // Copy plugin.json to destination
     const dest_manifest_path = std.fmt.allocPrint(allocator, "{s}/plugin.json", .{dest_path}) catch {
@@ -390,7 +408,9 @@ pub fn installFromPath(allocator: Allocator, source_path: []const u8, plugin_dir
             const exe_content = src_file.readToEndAlloc(allocator, 50 * 1024 * 1024) catch null;
             if (exe_content) |ec| {
                 defer allocator.free(ec);
-                de.writeAll(ec) catch {};
+                de.writeAll(ec) catch |err| {
+                    std.debug.print("warning: plugin: failed to write executable: {s}\n", .{@errorName(err)});
+                };
             }
         }
     }

@@ -590,7 +590,10 @@ pub fn getFieldCompletions(schema: *const GraphQLSchema, type_name: []const u8, 
         if (mem.eql(u8, t.name, type_name)) {
             for (t.fields.items) |f| {
                 if (prefix.len == 0 or mem.startsWith(u8, f.name, prefix)) {
-                    results.append(f.name) catch {};
+                    results.append(f.name) catch |err| {
+                        std.debug.print("warning: graphql: skipping field completion '{s}': {s}\n", .{ f.name, @errorName(err) });
+                        continue;
+                    };
                 }
             }
             break;
@@ -607,7 +610,10 @@ pub fn getTypeCompletions(schema: *const GraphQLSchema, prefix: []const u8) std.
         if (mem.startsWith(u8, t.name, "__")) continue;
         if (t.name.len == 0) continue;
         if (prefix.len == 0 or mem.startsWith(u8, t.name, prefix)) {
-            results.append(t.name) catch {};
+            results.append(t.name) catch |err| {
+                std.debug.print("warning: graphql: skipping type completion '{s}': {s}\n", .{ t.name, @errorName(err) });
+                continue;
+            };
         }
     }
     return results;
@@ -772,10 +778,16 @@ pub fn validateQuery(allocator: Allocator, query: []const u8, schema: *const Gra
     for (schema.types.items) |t| {
         // Add type names
         if (t.name.len > 0 and !mem.startsWith(u8, t.name, "__")) {
-            known_fields.put(t.name, {}) catch {};
+            known_fields.put(t.name, {}) catch |err| {
+                std.debug.print("warning: graphql: skipping known type '{s}': {s}\n", .{ t.name, @errorName(err) });
+                continue;
+            };
         }
         for (t.fields.items) |f| {
-            known_fields.put(f.name, {}) catch {};
+            known_fields.put(f.name, {}) catch |err| {
+                std.debug.print("warning: graphql: skipping known field '{s}': {s}\n", .{ f.name, @errorName(err) });
+                continue;
+            };
         }
     }
 
@@ -807,7 +819,10 @@ pub fn validateQuery(allocator: Allocator, query: []const u8, schema: *const Gra
         // Check if this identifier is known as a field or type name
         if (!known_fields.contains(token)) {
             const msg = std.fmt.allocPrint(allocator, "Unknown field '{s}' not found in schema", .{token}) catch continue;
-            errors.append(msg) catch {};
+            errors.append(msg) catch |err| {
+                std.debug.print("warning: graphql: skipping validation error: {s}\n", .{@errorName(err)});
+                continue;
+            };
         }
     }
 
@@ -859,7 +874,9 @@ pub const SchemaCache = struct {
     /// Writes both the raw JSON and a metadata file with the timestamp.
     pub fn cacheSchema(self: *const SchemaCache, allocator: Allocator, endpoint: []const u8, json_body: []const u8) !void {
         // Ensure cache directory exists
-        std.fs.cwd().makePath(self.cache_dir) catch {};
+        std.fs.cwd().makePath(self.cache_dir) catch |err| {
+            std.debug.print("warning: graphql: failed to create cache directory '{s}': {s}\n", .{ self.cache_dir, @errorName(err) });
+        };
 
         const file_path = try self.cacheFilePath(allocator, endpoint);
         defer allocator.free(file_path);
@@ -923,11 +940,15 @@ pub const SchemaCache = struct {
         const file_path = self.cacheFilePath(allocator, endpoint) catch return;
         defer allocator.free(file_path);
 
-        std.fs.cwd().deleteFile(file_path) catch {};
+        std.fs.cwd().deleteFile(file_path) catch |err| {
+            std.debug.print("warning: graphql: failed to delete cached schema: {s}\n", .{@errorName(err)});
+        };
 
         const meta_path = std.fmt.allocPrint(allocator, "{s}.meta", .{file_path}) catch return;
         defer allocator.free(meta_path);
-        std.fs.cwd().deleteFile(meta_path) catch {};
+        std.fs.cwd().deleteFile(meta_path) catch |err| {
+            std.debug.print("warning: graphql: failed to delete cache metadata: {s}\n", .{@errorName(err)});
+        };
     }
 };
 
@@ -961,7 +982,9 @@ pub fn introspectWithCache(
     if (body.len == 0) return error.EmptyResponse;
 
     // Cache the result
-    cache.cacheSchema(allocator, endpoint, body) catch {};
+    cache.cacheSchema(allocator, endpoint, body) catch |err| {
+        std.debug.print("warning: graphql: failed to cache schema for '{s}': {s}\n", .{ endpoint, @errorName(err) });
+    };
 
     return parseIntrospectionResult(allocator, body) orelse return error.InvalidSchema;
 }

@@ -116,7 +116,7 @@ pub fn downloadToFile(
                 .eta_seconds = eta,
                 .filename = filename,
             };
-            renderProgressBar(&progress, stderr) catch {};
+            renderProgressBar(&progress, stderr) catch {}; // output only
         }
 
         written = end;

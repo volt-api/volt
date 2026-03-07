@@ -615,7 +615,7 @@ pub const App = struct {
         // Update URL input
         self.url_input.clearRetainingCapacity();
         if (self.current_request) |req| {
-            self.url_input.appendSlice(req.url) catch {};
+            self.url_input.appendSlice(req.url) catch {}; // output only
         }
 
         // Find method index
@@ -700,12 +700,12 @@ pub const App = struct {
                         resp.status_code,
                         resp.timing.total_ms,
                         resp.size_bytes,
-                    }) catch {};
+                    }) catch {}; // output only
                     for (resp.headers.items) |h| {
-                        w.print("{s}: {s}\n", .{ h.name, h.value }) catch {};
+                        w.print("{s}: {s}\n", .{ h.name, h.value }) catch {}; // output only
                     }
-                    w.writeAll("\n") catch {};
-                    w.writeAll(p) catch {};
+                    w.writeAll("\n") catch {}; // output only
+                    w.writeAll(p) catch {}; // output only
                     self.allocator.free(p);
                     self.response_formatted = buf.toOwnedSlice() catch null;
                 } else {
@@ -771,7 +771,7 @@ pub const App = struct {
         tab.url_cursor = self.url_cursor;
         // Copy url_input contents
         tab.url_input.clearRetainingCapacity();
-        tab.url_input.appendSlice(self.url_input.items) catch {};
+        tab.url_input.appendSlice(self.url_input.items) catch {}; // output only
         // Update label
         if (self.current_file) |f| {
             tab.label = f;
@@ -790,7 +790,7 @@ pub const App = struct {
         self.url_cursor = tab.url_cursor;
         // Restore url_input
         self.url_input.clearRetainingCapacity();
-        self.url_input.appendSlice(tab.url_input.items) catch {};
+        self.url_input.appendSlice(tab.url_input.items) catch {}; // output only
     }
 
     fn switchToTab(self: *App, target: usize) !void {
@@ -911,7 +911,7 @@ pub const App = struct {
                 if (current_fp) |fp| {
                     new_tab.label = fp;
                 }
-                loaded_tabs.append(new_tab) catch {};
+                loaded_tabs.append(new_tab) catch {}; // output only
                 // Reset for next entry
                 current_fp = null;
                 current_scroll = 0;
@@ -941,7 +941,7 @@ pub const App = struct {
         // Restore active tab state and attempt to load its file
         self.restoreTabState(active_idx);
         if (self.tabs.items[active_idx].file_path) |fp| {
-            self.loadRequest(fp) catch {};
+            self.loadRequest(fp) catch {}; // output only
         }
 
         self.status_message = "Session restored";
@@ -976,7 +976,7 @@ pub const App = struct {
                 // Load first search result and exit search
                 if (self.collection_search_results.items.len > 0) {
                     const result = self.collection_search_results.items[0];
-                    self.loadRequest(result.file_path) catch {};
+                    self.loadRequest(result.file_path) catch {}; // output only
                 }
                 self.collection_search_active = false;
                 self.collection_search_query.clearRetainingCapacity();

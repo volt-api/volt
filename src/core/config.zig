@@ -108,14 +108,18 @@ pub fn loadConfig(allocator: Allocator, dir_path: []const u8) !VoltConfig {
         const cwd_rc = std.fs.cwd().openFile(".voltrc", .{}) catch return config;
         defer cwd_rc.close();
         const content = cwd_rc.readToEndAlloc(allocator, 1024 * 1024) catch return config;
-        parseConfig(&config, content) catch {};
+        parseConfig(&config, content) catch |err| {
+            std.debug.print("warning: config: failed to parse .voltrc: {s}\n", .{@errorName(err)});
+        };
         config._content = content;
         return config;
     };
     defer file.close();
 
     const content = file.readToEndAlloc(allocator, 1024 * 1024) catch return config;
-    parseConfig(&config, content) catch {};
+    parseConfig(&config, content) catch |err| {
+        std.debug.print("warning: config: failed to parse .voltrc: {s}\n", .{@errorName(err)});
+    };
     config._content = content;
     return config;
 }
@@ -158,7 +162,9 @@ fn parseConfig(config: *VoltConfig, content: []const u8) !void {
             } else if (mem.eql(u8, key, "timeout")) {
                 config.timeout_ms = std.fmt.parseInt(u32, value, 10) catch blk: {
                     const stderr = std.io.getStdErr().writer();
-                    stderr.print("Warning: invalid timeout value '{s}', using default 30000ms\n", .{value}) catch {};
+                    stderr.print("Warning: invalid timeout value '{s}', using default 30000ms\n", .{value}) catch |err| {
+                        std.debug.print("warning: config: stderr write failed: {s}\n", .{@errorName(err)});
+                    };
                     break :blk 30_000;
                 };
             } else if (mem.eql(u8, key, "environment")) {
@@ -172,7 +178,9 @@ fn parseConfig(config: *VoltConfig, content: []const u8) !void {
             } else if (mem.eql(u8, key, "max_redirects")) {
                 config.max_redirects = std.fmt.parseInt(u8, value, 10) catch blk: {
                     const stderr = std.io.getStdErr().writer();
-                    stderr.print("Warning: invalid max_redirects value '{s}', using default 10\n", .{value}) catch {};
+                    stderr.print("Warning: invalid max_redirects value '{s}', using default 10\n", .{value}) catch |err| {
+                        std.debug.print("warning: config: stderr write failed: {s}\n", .{@errorName(err)});
+                    };
                     break :blk 10;
                 };
             } else if (mem.eql(u8, key, "verify_ssl")) {

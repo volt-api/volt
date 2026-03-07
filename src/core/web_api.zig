@@ -302,7 +302,9 @@ pub const ApiHandler = struct {
         defer response.deinit();
 
         // Record in history
-        self.history.record(&request, &response, null) catch {};
+        self.history.record(&request, &response, null) catch |err| {
+            std.debug.print("warning: web_api: history record failed: {s}\n", .{@errorName(err)});
+        };
 
         // Build response JSON
         return try self.buildResponseJson(&response);
@@ -1102,7 +1104,9 @@ pub const ApiHandler = struct {
             defer response.deinit();
 
             // Record in history
-            self.history.record(&request, &response, null) catch {};
+            self.history.record(&request, &response, null) catch |err| {
+                std.debug.print("warning: web_api: history record failed: {s}\n", .{@errorName(err)});
+            };
 
             const success = response.status_code >= 200 and response.status_code < 400;
             if (success) {

@@ -409,7 +409,9 @@ fn convertPostmanScript(
         const msg = std.fmt.allocPrint(str_alloc, "Skipped {s} script line in '{s}': {s}", .{
             type_str, item_name, trimmed,
         }) catch continue;
-        result.errors.append(msg) catch {};
+        result.errors.append(msg) catch |err| {
+            std.debug.print("warning: importer: error collection append failed: {s}\n", .{@errorName(err)});
+        };
     }
 
     if (!has_content) return null;
@@ -850,7 +852,9 @@ pub fn writeImportedCollection(
     output_dir: []const u8,
 ) !void {
     // Create output directory
-    std.fs.cwd().makePath(output_dir) catch {};
+    std.fs.cwd().makePath(output_dir) catch |err| {
+        std.debug.print("warning: importer: failed to create output directory: {s}\n", .{@errorName(err)});
+    };
 
     // Write _collection.volt if collection-level auth exists
     writeCollectionVolt(allocator, result, output_dir);
@@ -865,7 +869,9 @@ pub fn writeImportedCollection(
 
         // Create parent directories
         if (mem.lastIndexOf(u8, full_path, "/")) |last_slash| {
-            std.fs.cwd().makePath(full_path[0..last_slash]) catch {};
+            std.fs.cwd().makePath(full_path[0..last_slash]) catch |err| {
+                std.debug.print("warning: importer: failed to create parent directory: {s}\n", .{@errorName(err)});
+            };
         }
 
         // Serialize to .volt format

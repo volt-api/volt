@@ -164,15 +164,20 @@ pub fn parseOpenAPISpec(allocator: Allocator, json_content: []const u8) ?OpenAPI
                 endpoint.description = extractJsonString(method_data, "description");
 
                 // Parse parameters
-                parseParameters(allocator, method_data, &endpoint) catch {};
+                parseParameters(allocator, method_data, &endpoint) catch |err| {
+                    std.debug.print("warning: openapi_designer: parseParameters failed: {s}\n", .{@errorName(err)});
+                };
 
                 // Parse request body
                 endpoint.request_body = parseRequestBody(method_data);
 
                 // Parse responses
-                parseResponses(allocator, method_data, &endpoint) catch {};
+                parseResponses(allocator, method_data, &endpoint) catch |err| {
+                    std.debug.print("warning: openapi_designer: parseResponses failed: {s}\n", .{@errorName(err)});
+                };
 
-                spec.endpoints.append(endpoint) catch {
+                spec.endpoints.append(endpoint) catch |err| {
+                    std.debug.print("warning: openapi_designer: failed to append endpoint: {s}\n", .{@errorName(err)});
                     endpoint.deinit();
                     continue;
                 };
@@ -195,28 +200,48 @@ pub fn generateVoltFiles(allocator: Allocator, spec: *const OpenAPISpec) std.Arr
     // Generate _collection.volt
     var coll_buf = std.ArrayList(u8).init(allocator);
     const coll_writer = coll_buf.writer();
-    coll_writer.print("# Collection: {s}\n", .{spec.title}) catch {};
-    coll_writer.print("# Version: {s}\n", .{spec.version}) catch {};
+    coll_writer.print("# Collection: {s}\n", .{spec.title}) catch |err| {
+        std.debug.print("warning: openapi_designer: collection write failed: {s}\n", .{@errorName(err)});
+    };
+    coll_writer.print("# Version: {s}\n", .{spec.version}) catch |err| {
+        std.debug.print("warning: openapi_designer: collection write failed: {s}\n", .{@errorName(err)});
+    };
     if (spec.description) |desc| {
-        coll_writer.print("# {s}\n", .{desc}) catch {};
+        coll_writer.print("# {s}\n", .{desc}) catch |err| {
+            std.debug.print("warning: openapi_designer: collection write failed: {s}\n", .{@errorName(err)});
+        };
     }
-    coll_writer.writeAll("\n---\n\n") catch {};
-    coll_writer.print("BASE_URL {s}\n", .{base_url}) catch {};
+    coll_writer.writeAll("\n---\n\n") catch |err| {
+        std.debug.print("warning: openapi_designer: collection write failed: {s}\n", .{@errorName(err)});
+    };
+    coll_writer.print("BASE_URL {s}\n", .{base_url}) catch |err| {
+        std.debug.print("warning: openapi_designer: collection write failed: {s}\n", .{@errorName(err)});
+    };
     files.append(.{
         .path = allocator.dupe(u8, "_collection.volt") catch "_collection.volt",
         .content = coll_buf.toOwnedSlice() catch "",
-    }) catch {};
+    }) catch |err| {
+        std.debug.print("warning: openapi_designer: failed to append collection file: {s}\n", .{@errorName(err)});
+    };
 
     // Generate _env.volt
     var env_buf = std.ArrayList(u8).init(allocator);
     const env_writer = env_buf.writer();
-    env_writer.writeAll("# Environment variables\n\n") catch {};
-    env_writer.writeAll("---\n\n") catch {};
-    env_writer.print("base_url={s}\n", .{base_url}) catch {};
+    env_writer.writeAll("# Environment variables\n\n") catch |err| {
+        std.debug.print("warning: openapi_designer: env write failed: {s}\n", .{@errorName(err)});
+    };
+    env_writer.writeAll("---\n\n") catch |err| {
+        std.debug.print("warning: openapi_designer: env write failed: {s}\n", .{@errorName(err)});
+    };
+    env_writer.print("base_url={s}\n", .{base_url}) catch |err| {
+        std.debug.print("warning: openapi_designer: env write failed: {s}\n", .{@errorName(err)});
+    };
     files.append(.{
         .path = allocator.dupe(u8, "_env.volt") catch "_env.volt",
         .content = env_buf.toOwnedSlice() catch "",
-    }) catch {};
+    }) catch |err| {
+        std.debug.print("warning: openapi_designer: failed to append env file: {s}\n", .{@errorName(err)});
+    };
 
     // Generate one .volt file per endpoint
     for (spec.endpoints.items) |endpoint| {
@@ -225,46 +250,72 @@ pub fn generateVoltFiles(allocator: Allocator, spec: *const OpenAPISpec) std.Arr
 
         // Header comment
         if (endpoint.summary) |summary| {
-            writer.print("# {s}\n", .{summary}) catch {};
+            writer.print("# {s}\n", .{summary}) catch |err| {
+                std.debug.print("warning: openapi_designer: endpoint write failed: {s}\n", .{@errorName(err)});
+            };
         }
         if (endpoint.description) |desc| {
-            writer.print("# {s}\n", .{desc}) catch {};
+            writer.print("# {s}\n", .{desc}) catch |err| {
+                std.debug.print("warning: openapi_designer: endpoint write failed: {s}\n", .{@errorName(err)});
+            };
         }
 
-        writer.writeAll("\n---\n\n") catch {};
+        writer.writeAll("\n---\n\n") catch |err| {
+            std.debug.print("warning: openapi_designer: endpoint write failed: {s}\n", .{@errorName(err)});
+        };
 
         // Method and URL
-        writer.print("{s} {s}{s}\n", .{ endpoint.method, base_url, endpoint.path }) catch {};
+        writer.print("{s} {s}{s}\n", .{ endpoint.method, base_url, endpoint.path }) catch |err| {
+            std.debug.print("warning: openapi_designer: endpoint write failed: {s}\n", .{@errorName(err)});
+        };
 
         // Headers from header-type parameters
         var has_headers = false;
         for (endpoint.parameters.items) |param| {
             if (mem.eql(u8, param.location, "header")) {
                 if (!has_headers) {
-                    writer.writeAll("\n") catch {};
+                    writer.writeAll("\n") catch |err| {
+                        std.debug.print("warning: openapi_designer: header write failed: {s}\n", .{@errorName(err)});
+                    };
                     has_headers = true;
                 }
-                writer.print("{s}: <{s}>\n", .{ param.name, param.param_type }) catch {};
+                writer.print("{s}: <{s}>\n", .{ param.name, param.param_type }) catch |err| {
+                    std.debug.print("warning: openapi_designer: header write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
 
         // Request body
         if (endpoint.request_body) |body| {
-            writer.writeAll("\n") catch {};
-            writer.print("Content-Type: {s}\n", .{body.content_type}) catch {};
-            writer.writeAll("\n") catch {};
+            writer.writeAll("\n") catch |err| {
+                std.debug.print("warning: openapi_designer: body write failed: {s}\n", .{@errorName(err)});
+            };
+            writer.print("Content-Type: {s}\n", .{body.content_type}) catch |err| {
+                std.debug.print("warning: openapi_designer: body write failed: {s}\n", .{@errorName(err)});
+            };
+            writer.writeAll("\n") catch |err| {
+                std.debug.print("warning: openapi_designer: body write failed: {s}\n", .{@errorName(err)});
+            };
             if (body.example) |example| {
-                writer.print("{s}\n", .{example}) catch {};
+                writer.print("{s}\n", .{example}) catch |err| {
+                    std.debug.print("warning: openapi_designer: body write failed: {s}\n", .{@errorName(err)});
+                };
             } else {
-                writer.writeAll("{}\n") catch {};
+                writer.writeAll("{}\n") catch |err| {
+                    std.debug.print("warning: openapi_designer: body write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
 
         // Test assertions from response definitions
         if (endpoint.responses.items.len > 0) {
-            writer.writeAll("\n---\n\n") catch {};
+            writer.writeAll("\n---\n\n") catch |err| {
+                std.debug.print("warning: openapi_designer: assertion write failed: {s}\n", .{@errorName(err)});
+            };
             for (endpoint.responses.items) |resp| {
-                writer.print("assert status equals {d}\n", .{resp.status_code}) catch {};
+                writer.print("assert status equals {d}\n", .{resp.status_code}) catch |err| {
+                    std.debug.print("warning: openapi_designer: assertion write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
 
@@ -274,7 +325,9 @@ pub fn generateVoltFiles(allocator: Allocator, spec: *const OpenAPISpec) std.Arr
         files.append(.{
             .path = filename,
             .content = buf.toOwnedSlice() catch "",
-        }) catch {};
+        }) catch |err| {
+            std.debug.print("warning: openapi_designer: failed to append endpoint file: {s}\n", .{@errorName(err)});
+        };
     }
 
     return files;
@@ -325,7 +378,9 @@ pub fn validateResponseAgainstSpec(
             .field = "status_code",
             .message = msg,
             .severity = .error_sev,
-        }) catch {};
+        }) catch |err| {
+            std.debug.print("warning: openapi_designer: failed to append validation error: {s}\n", .{@errorName(err)});
+        };
     }
 
     // Check content-type if expected
@@ -341,14 +396,18 @@ pub fn validateResponseAgainstSpec(
                     .field = "content_type",
                     .message = ct_msg,
                     .severity = .error_sev,
-                }) catch {};
+                }) catch |err| {
+                    std.debug.print("warning: openapi_designer: failed to append validation error: {s}\n", .{@errorName(err)});
+                };
             }
         } else {
             errors.append(.{
                 .field = "content_type",
                 .message = "Response missing content-type header",
                 .severity = .warning,
-            }) catch {};
+            }) catch |err| {
+                std.debug.print("warning: openapi_designer: failed to append validation error: {s}\n", .{@errorName(err)});
+            };
         }
     }
 
@@ -362,14 +421,22 @@ pub fn formatSpecSummary(allocator: Allocator, spec: *const OpenAPISpec) []const
 
     writer.print("\x1b[1m{s}\x1b[0m v{s}\n", .{ spec.title, spec.version }) catch return "";
     if (spec.description) |desc| {
-        writer.print("{s}\n", .{desc}) catch {};
+        writer.print("{s}\n", .{desc}) catch |err| {
+            std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+        };
     }
     if (spec.base_url) |base| {
-        writer.print("Server: {s}\n", .{base}) catch {};
+        writer.print("Server: {s}\n", .{base}) catch |err| {
+            std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+        };
     }
-    writer.writeAll("\n") catch {};
+    writer.writeAll("\n") catch |err| {
+        std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+    };
 
-    writer.print("Endpoints ({d}):\n", .{spec.endpoints.items.len}) catch {};
+    writer.print("Endpoints ({d}):\n", .{spec.endpoints.items.len}) catch |err| {
+        std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+    };
     for (spec.endpoints.items) |endpoint| {
         const method_color: []const u8 = if (mem.eql(u8, endpoint.method, "GET"))
             "\x1b[32m"
@@ -382,11 +449,17 @@ pub fn formatSpecSummary(allocator: Allocator, spec: *const OpenAPISpec) []const
         else
             "\x1b[36m";
 
-        writer.print("  {s}{s}\x1b[0m {s}", .{ method_color, endpoint.method, endpoint.path }) catch {};
+        writer.print("  {s}{s}\x1b[0m {s}", .{ method_color, endpoint.method, endpoint.path }) catch |err| {
+            std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+        };
         if (endpoint.summary) |summary| {
-            writer.print(" - {s}", .{summary}) catch {};
+            writer.print(" - {s}", .{summary}) catch |err| {
+                std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+            };
         }
-        writer.writeAll("\n") catch {};
+        writer.writeAll("\n") catch |err| {
+            std.debug.print("warning: openapi_designer: summary write failed: {s}\n", .{@errorName(err)});
+        };
     }
 
     return buf.toOwnedSlice() catch return "";

@@ -147,7 +147,9 @@ pub fn execute(
         var h3_headers = std.ArrayList(H3.Header).init(allocator);
         defer h3_headers.deinit();
         for (request.headers.items) |h| {
-            h3_headers.append(.{ .name = h.name, .value = h.value }) catch {};
+            h3_headers.append(.{ .name = h.name, .value = h.value }) catch |err| {
+                std.debug.print("warning: http_client: h3 header append failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         // Parse authority and port from URL
@@ -200,9 +202,13 @@ pub fn execute(
         response.status_code = h3_resp.status_code;
         response.http_version = .http3;
         for (h3_resp.headers.items) |h| {
-            response.headers.append(.{ .name = h.name, .value = h.value }) catch {};
+            response.headers.append(.{ .name = h.name, .value = h.value }) catch |err| {
+                std.debug.print("warning: http_client: h3 response header append failed: {s}\n", .{@errorName(err)});
+            };
         }
-        response.body.appendSlice(h3_resp.body.items) catch {};
+        response.body.appendSlice(h3_resp.body.items) catch |err| {
+            std.debug.print("warning: http_client: h3 response body append failed: {s}\n", .{@errorName(err)});
+        };
         response.size_bytes = response.body.items.len;
         response.total_size = response.size_bytes;
         return response;
@@ -602,7 +608,9 @@ pub fn executeStreaming(
         var h3_headers = std.ArrayList(H3.Header).init(allocator);
         defer h3_headers.deinit();
         for (request.headers.items) |h| {
-            h3_headers.append(.{ .name = h.name, .value = h.value }) catch {};
+            h3_headers.append(.{ .name = h.name, .value = h.value }) catch |err| {
+                std.debug.print("warning: http_client: streaming h3 header append failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         var authority: []const u8 = "localhost";
@@ -646,11 +654,15 @@ pub fn executeStreaming(
         response.status_code = h3_resp.status_code;
         response.http_version = .http3;
         for (h3_resp.headers.items) |h| {
-            response.headers.append(.{ .name = h.name, .value = h.value }) catch {};
+            response.headers.append(.{ .name = h.name, .value = h.value }) catch |err| {
+                std.debug.print("warning: http_client: streaming h3 response header append failed: {s}\n", .{@errorName(err)});
+            };
         }
         // Stream body to writer
         if (h3_resp.body.items.len > 0) {
-            writer.writeAll(h3_resp.body.items) catch {};
+            writer.writeAll(h3_resp.body.items) catch |err| {
+                std.debug.print("warning: http_client: streaming h3 body write failed: {s}\n", .{@errorName(err)});
+            };
             response.size_bytes = h3_resp.body.items.len;
         }
         return response;

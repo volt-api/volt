@@ -147,7 +147,9 @@ pub const QuicConnection = struct {
                 const tv = posix.timeval{ .tv_sec = @intCast(DEFAULT_TIMEOUT_MS / 1000), .tv_usec = @intCast((DEFAULT_TIMEOUT_MS % 1000) * 1000) };
                 break :blk @bitCast(tv);
             };
-            posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout_opt) catch {};
+            posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout_opt) catch |err| {
+                std.debug.print("warning: quic/connection: setsockopt RCVTIMEO failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         self.socket = sock;
@@ -322,7 +324,9 @@ pub const QuicConnection = struct {
             defer encrypted.deinit();
 
             if (self.socket) |sock| {
-                _ = posix.write(sock, encrypted.items) catch {};
+                _ = posix.write(sock, encrypted.items) catch |err| {
+                    std.debug.print("warning: quic/connection: close packet write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
         self.state = .closed;
@@ -453,7 +457,9 @@ pub const QuicConnection = struct {
             const encrypted = packet_mod.encodeShortPacket(self.dcid, ack_pn, &ack_frames, app_keys, self.allocator) catch return;
             defer encrypted.deinit();
             if (self.socket) |s| {
-                _ = posix.write(s, encrypted.items) catch {};
+                _ = posix.write(s, encrypted.items) catch |err| {
+                    std.debug.print("warning: quic/connection: ACK packet write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
     }
@@ -537,7 +543,9 @@ pub const QuicConnection = struct {
                     null,
                 ) catch return;
                 defer encrypted.deinit();
-                _ = posix.write(sock, encrypted.items) catch {};
+                _ = posix.write(sock, encrypted.items) catch |err| {
+                    std.debug.print("warning: quic/connection: sendAck initial/handshake write failed: {s}\n", .{@errorName(err)});
+                };
             } else {
                 const encrypted = packet_mod.encodeShortPacket(
                     self.dcid,
@@ -547,7 +555,9 @@ pub const QuicConnection = struct {
                     self.allocator,
                 ) catch return;
                 defer encrypted.deinit();
-                _ = posix.write(sock, encrypted.items) catch {};
+                _ = posix.write(sock, encrypted.items) catch |err| {
+                    std.debug.print("warning: quic/connection: sendAck short packet write failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
     }

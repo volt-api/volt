@@ -82,7 +82,9 @@ pub fn getTimestamp() [16]u8 {
         day_seconds.getHoursIntoDay(),
         day_seconds.getMinutesIntoHour(),
         day_seconds.getSecondsIntoMinute(),
-    }) catch {};
+    }) catch |err| {
+        std.debug.print("warning: signing: timestamp format failed: {s}\n", .{@errorName(err)});
+    };
 
     return buf;
 }

@@ -73,7 +73,7 @@ const ThreadSafeResult = struct {
         self.result.total_requests += 1;
         self.result.successful += 1;
         self.result.sum_ms += timing;
-        self.result.timings.append(timing) catch {};
+        self.result.timings.append(timing) catch {}; // output only
 
         if (timing < self.result.min_ms) self.result.min_ms = timing;
         if (timing > self.result.max_ms) self.result.max_ms = timing;

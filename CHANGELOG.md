@@ -2,7 +2,7 @@
 
 All notable changes to Volt will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-03-07
 
 ### Added
 
@@ -52,9 +52,9 @@ All notable changes to Volt will be documented in this file.
 - Postman import handles 50MB+ collections without memory issues
 
 ### Changed
-- Module count: 56 → 63
-- Test count: 366 → 515
-- Lines of code: 31K → 36K+
+- Module count: 56 → 72
+- Test count: 366 → 653
+- Lines of code: 31K → 49K+
 
 ## [1.0.1] - 2026-02-15
 

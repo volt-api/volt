@@ -209,7 +209,9 @@ pub fn runCollection(
         // Execute pre-script first so it can set runtime variables used in interpolation.
         if (request.pre_script) |pre| {
             script_ctx.request = &request;
-            Scripting.executeScript(&script_ctx, pre) catch {};
+            Scripting.executeScript(&script_ctx, pre) catch |err| {
+                std.debug.print("warning: collection_runner: pre-script execution failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         // Interpolate request fields (URL, headers, auth, body) using:
@@ -278,7 +280,9 @@ pub fn runCollection(
         const cookie_header = cookie_jar.getCookieHeader(request.url) catch null;
         defer if (cookie_header) |ch| allocator.free(ch);
         if (cookie_header) |ch| {
-            request.headers.append(.{ .name = "Cookie", .value = ch }) catch {};
+            request.headers.append(.{ .name = "Cookie", .value = ch }) catch |err| {
+                std.debug.print("warning: collection_runner: cookie header append failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         run_result.method = request.method;
@@ -306,14 +310,18 @@ pub fn runCollection(
         for (response.headers.items) |h| {
             if (std.ascii.eqlIgnoreCase(h.name, "set-cookie")) {
                 const domain = extractDomainFromUrl(request.url);
-                cookie_jar.parseSetCookie(h.value, domain) catch {};
+                cookie_jar.parseSetCookie(h.value, domain) catch |err| {
+                    std.debug.print("warning: collection_runner: parseSetCookie failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
 
         // Execute post-script
         if (request.post_script) |post| {
             script_ctx.response = &response;
-            Scripting.executeScript(&script_ctx, post) catch {};
+            Scripting.executeScript(&script_ctx, post) catch |err| {
+                std.debug.print("warning: collection_runner: post-script execution failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         // Run test assertions

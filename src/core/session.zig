@@ -52,7 +52,9 @@ pub const Session = struct {
     }
 
     fn trackString(self: *Session, s: []const u8) void {
-        self._owned_strings.append(s) catch {};
+        self._owned_strings.append(s) catch |err| {
+            std.debug.print("warning: session: tracking owned string failed: {s}\n", .{@errorName(err)});
+        };
     }
 };
 
@@ -119,7 +121,9 @@ pub fn listSessions(allocator: Allocator) !std.ArrayList([]const u8) {
 pub fn deleteSession(allocator: Allocator, name: []const u8, host: []const u8) !void {
     const path = try sessionPath(allocator, name, host);
     defer allocator.free(path);
-    std.fs.cwd().deleteFile(path) catch {};
+    std.fs.cwd().deleteFile(path) catch |err| {
+        std.debug.print("warning: session: delete session file failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 /// Apply session headers and cookies to a request's header list.
@@ -209,7 +213,9 @@ pub fn updateFromResponse(session: *Session, response_headers: []const Header) v
                         .name = owned_name,
                         .value = owned_value,
                         .domain = session.host,
-                    }) catch {};
+                    }) catch |err| {
+                        std.debug.print("warning: session: cookie append failed: {s}\n", .{@errorName(err)});
+                    };
                 }
             }
         }

@@ -30,3 +30,14 @@ desktop.ini
 
 # Marketing (internal, not part of repo)
 marketing/
+
+# Reference repos (development only)
+ref/
+
+# Marketing website (separate deployment)
+website/
+
+# Build artifacts from test compilations
+*.exe
+*.obj
+*.pdb
