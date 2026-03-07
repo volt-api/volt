@@ -336,11 +336,18 @@ pub const EnvManager = struct {
         errdefer self.allocator.free(content);
         try self.env_file_contents.append(content);
 
-        // Parse _env.volt format:
-        // environment: dev
-        // variables:
-        //   base_url: https://api.dev.example.com
-        //   $api_key: secret123
+        // Supports two formats:
+        //
+        // YAML-like format:
+        //   environment: dev
+        //   variables:
+        //     base_url: https://api.dev.example.com
+        //     $api_key: secret123
+        //
+        // INI-like format (created by `volt init`):
+        //   [default]
+        //   base_url = https://httpbin.org
+        //   api_key = your-key
 
         var current_env_name: ?[]const u8 = null;
         var in_variables = false;
@@ -351,6 +358,7 @@ pub const EnvManager = struct {
             const trimmed = mem.trim(u8, line, " \t");
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
+            // YAML-like: environment: dev
             if (mem.startsWith(u8, trimmed, "environment:")) {
                 const val = mem.trim(u8, trimmed["environment:".len..], " \t");
                 current_env_name = val;
@@ -359,12 +367,33 @@ pub const EnvManager = struct {
                 in_variables = false;
             } else if (mem.eql(u8, trimmed, "variables:")) {
                 in_variables = true;
+            } else if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+                // INI-like: [section_name]
+                const section_name = trimmed[1 .. trimmed.len - 1];
+                if (section_name.len > 0) {
+                    current_env_name = section_name;
+                    _ = try self.createEnv(section_name);
+                    self.setActive(section_name);
+                    in_variables = true; // variables follow directly
+                }
             } else if (in_variables and current_env_name != null) {
-                if (mem.indexOf(u8, trimmed, ": ")) |colon_pos| {
-                    const key = trimmed[0..colon_pos];
-                    const value = trimmed[colon_pos + 2 ..];
-                    if (self.getEnv(current_env_name.?)) |env| {
-                        try env.set(key, value);
+                // YAML-like: key: value  OR  INI-like: key = value
+                var key: ?[]const u8 = null;
+                var value: ?[]const u8 = null;
+
+                if (mem.indexOf(u8, trimmed, " = ")) |eq_pos| {
+                    key = trimmed[0..eq_pos];
+                    value = trimmed[eq_pos + 3 ..];
+                } else if (mem.indexOf(u8, trimmed, ": ")) |colon_pos| {
+                    key = trimmed[0..colon_pos];
+                    value = trimmed[colon_pos + 2 ..];
+                }
+
+                if (key) |k| {
+                    if (value) |v| {
+                        if (self.getEnv(current_env_name.?)) |env| {
+                            try env.set(k, v);
+                        }
                     }
                 }
             }

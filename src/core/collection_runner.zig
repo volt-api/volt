@@ -145,21 +145,32 @@ pub fn runCollection(
     var cookie_jar = CookieJar.CookieJar.init(allocator);
     defer cookie_jar.deinit();
 
-    // Load collection-level auth from _collection.volt if present
+    // Load collection-level auth and headers from _collection.volt if present
     var collection_auth = VoltFile.Auth{};
+    var collection_headers = std.ArrayList(VoltFile.Header).init(allocator);
+    defer collection_headers.deinit();
     const coll_config_path = std.fmt.allocPrint(allocator, "{s}/_collection.volt", .{dir_path}) catch null;
     defer if (coll_config_path) |cp| allocator.free(cp);
+    var coll_content_kept: ?[]const u8 = null;
+    defer if (coll_content_kept) |cc| allocator.free(cc);
     if (coll_config_path) |cp| {
         const coll_file = std.fs.cwd().openFile(cp, .{}) catch null;
         if (coll_file) |cf| {
             defer cf.close();
             const coll_content = cf.readToEndAlloc(allocator, 1024 * 1024) catch null;
             if (coll_content) |cc| {
-                defer allocator.free(cc);
                 var coll_req = VoltFile.parse(allocator, cc) catch null;
                 if (coll_req) |*cr| {
                     defer cr.deinit();
                     collection_auth = cr.auth;
+                    // Copy collection headers (slices point into coll_content)
+                    for (cr.headers.items) |h| {
+                        collection_headers.append(.{ .name = h.name, .value = h.value }) catch {};
+                    }
+                    // Keep content alive so header slices remain valid
+                    coll_content_kept = cc;
+                } else {
+                    allocator.free(cc);
                 }
             }
         }
@@ -199,6 +210,20 @@ pub fn runCollection(
         // Inherit collection-level auth if request doesn't define its own
         if (request.auth.type == .none and collection_auth.type != .none) {
             request.auth = collection_auth;
+        }
+
+        // Inherit collection-level headers (only if not already present in request)
+        for (collection_headers.items) |ch| {
+            var found = false;
+            for (request.headers.items) |rh| {
+                if (mem.eql(u8, rh.name, ch.name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                request.headers.append(.{ .name = ch.name, .value = ch.value }) catch {};
+            }
         }
 
         // Script context (pre/post) participates in runtime variable propagation.

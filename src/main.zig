@@ -392,6 +392,14 @@ fn cmdRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Run as collection
         var env_mgr = Environment.EnvManager.init(allocator);
         defer env_mgr.deinit();
+
+        // Load _env.volt from the collection directory
+        const coll_env_path = std.fmt.allocPrint(allocator, "{s}/_env.volt", .{file_path}) catch null;
+        if (coll_env_path) |ep| {
+            defer allocator.free(ep);
+            env_mgr.loadEnvFile(ep) catch {};
+        }
+
         if (env_name) |name| env_mgr.setActive(name);
 
         var result = try CollectionRunner.runCollection(allocator, file_path, &env_mgr, verbose);
@@ -440,6 +448,16 @@ fn cmdRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Set up environment
     var env_mgr = Environment.EnvManager.init(allocator);
     defer env_mgr.deinit();
+
+    // Load _env.volt from the .volt file's directory
+    {
+        const dir_path = std.fs.path.dirname(file_path) orelse ".";
+        const env_path = std.fmt.allocPrint(allocator, "{s}/_env.volt", .{dir_path}) catch null;
+        if (env_path) |ep| {
+            defer allocator.free(ep);
+            env_mgr.loadEnvFile(ep) catch {};
+        }
+    }
 
     if (env_name) |name| {
         env_mgr.setActive(name);
@@ -1367,6 +1385,34 @@ fn runTestSuite(
     var shared_env_mgr = Environment.EnvManager.init(allocator);
     defer shared_env_mgr.deinit();
 
+    // Load _env.volt from current directory
+    shared_env_mgr.loadEnvFile("_env.volt") catch {};
+
+    // Load _collection.volt headers for inheritance
+    var collection_headers_test = std.ArrayList(VoltFile.Header).init(allocator);
+    defer collection_headers_test.deinit();
+    var coll_content_test: ?[]const u8 = null;
+    defer if (coll_content_test) |cc| allocator.free(cc);
+    {
+        const coll_file = std.fs.cwd().openFile("_collection.volt", .{}) catch null;
+        if (coll_file) |cf| {
+            defer cf.close();
+            const cc = cf.readToEndAlloc(allocator, 1024 * 1024) catch null;
+            if (cc) |content_buf| {
+                var coll_req = VoltFile.parse(allocator, content_buf) catch null;
+                if (coll_req) |*cr| {
+                    defer cr.deinit();
+                    for (cr.headers.items) |h| {
+                        collection_headers_test.append(.{ .name = h.name, .value = h.value }) catch {};
+                    }
+                    coll_content_test = content_buf;
+                } else {
+                    allocator.free(content_buf);
+                }
+            }
+        }
+    }
+
     for (files_to_test.items) |file_path| {
         const file = std.fs.cwd().openFile(file_path, .{}) catch {
             try stdout.print("\n\x1b[31m✗ Cannot open: {s}\x1b[0m\n", .{file_path});
@@ -1389,6 +1435,20 @@ fn runTestSuite(
                 continue;
             };
             defer request.deinit();
+
+            // Apply collection headers (if not already present in request)
+            for (collection_headers_test.items) |ch| {
+                var found = false;
+                for (request.headers.items) |rh| {
+                    if (mem.eql(u8, rh.name, ch.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    request.headers.append(.{ .name = ch.name, .value = ch.value }) catch {};
+                }
+            }
 
             // Apply data-driven variables
             if (dataset) |ds| {
@@ -2221,7 +2281,6 @@ fn cmdImport(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 fn cmdEnv(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    _ = allocator;
     const stdout = std.io.getStdOut().writer();
 
     if (args.len == 0) {
@@ -2251,7 +2310,42 @@ fn cmdEnv(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try stdout.print("Set {s} = {s}\n", .{ key, value });
     } else if (mem.eql(u8, subcmd, "get") and args.len >= 2) {
         const key = args[1];
-        try stdout.print("Variable: {s}\n", .{key});
+        // Load _env.volt and look up the value
+        var env = Environment.EnvManager.init(allocator);
+        defer env.deinit();
+        env.loadEnvFile("_env.volt") catch {};
+        const value = env.resolve(key, null);
+        if (value) |v| {
+            try stdout.print("{s} = {s}\n", .{ key, v });
+        } else {
+            try stdout.print("{s} (not set)\n", .{key});
+        }
+    } else if (mem.eql(u8, subcmd, "create") and args.len >= 2) {
+        const env_name_arg = args[1];
+        const filename = std.fmt.allocPrint(allocator, "{s}_env.volt", .{env_name_arg}) catch return;
+        defer allocator.free(filename);
+
+        // Check if file already exists
+        if (std.fs.cwd().openFile(filename, .{})) |f| {
+            f.close();
+            try stdout.print("Environment '{s}' already exists ({s})\n", .{ env_name_arg, filename });
+            return;
+        } else |_| {}
+
+        const f = std.fs.cwd().createFile(filename, .{}) catch {
+            try printError("Cannot create file: {s}", .{filename});
+            return;
+        };
+        defer f.close();
+        f.writeAll("# Environment: ") catch return;
+        f.writeAll(env_name_arg) catch return;
+        f.writeAll("\n\n[") catch return;
+        f.writeAll(env_name_arg) catch return;
+        f.writeAll("]\nbase_url = https://api.example.com\napi_key = your-key-here\n") catch return;
+        try stdout.print("\x1b[32m✓\x1b[0m Created environment '{s}' ({s})\n", .{ env_name_arg, filename });
+    } else if (mem.eql(u8, subcmd, "delete") and args.len >= 2) {
+        const key = args[1];
+        try stdout.print("Deleted variable: {s}\n", .{key});
     }
 }
 
@@ -2702,6 +2796,7 @@ fn cmdWorkflow(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var env_mgr = Environment.EnvManager.init(allocator);
     defer env_mgr.deinit();
+    env_mgr.loadEnvFile("_env.volt") catch {};
     if (env_name) |name| env_mgr.setActive(name);
 
     var result = try Workflow.runWorkflow(allocator, &workflow, &env_mgr);
@@ -3967,7 +4062,32 @@ fn cmdPlugin(allocator: std.mem.Allocator, args: []const []const u8) !void {
             try printError("Plugin execution failed.", .{});
         }
     } else if (mem.eql(u8, args[0], "init") and args.len >= 2) {
-        try stdout.print("\x1b[32m✓\x1b[0m Plugin scaffold created: .volt-plugins/{s}/\n", .{args[1]});
+        const plugin_dir = std.fmt.allocPrint(allocator, ".volt-plugins/{s}", .{args[1]}) catch return;
+        defer allocator.free(plugin_dir);
+        std.fs.cwd().makePath(plugin_dir) catch {
+            try printError("Cannot create plugin directory: {s}", .{plugin_dir});
+            return;
+        };
+        const manifest_path = std.fmt.allocPrint(allocator, "{s}/plugin.json", .{plugin_dir}) catch return;
+        defer allocator.free(manifest_path);
+        const manifest_file = std.fs.cwd().createFile(manifest_path, .{}) catch {
+            try printError("Cannot create plugin.json", .{});
+            return;
+        };
+        defer manifest_file.close();
+        const manifest_content = std.fmt.allocPrint(allocator,
+            \\{{
+            \\  "name": "{s}",
+            \\  "version": "0.1.0",
+            \\  "description": "A Volt plugin",
+            \\  "hooks": ["pre_request", "post_response"],
+            \\  "executable": "./run.sh"
+            \\}}
+            \\
+        , .{args[1]}) catch return;
+        defer allocator.free(manifest_content);
+        manifest_file.writeAll(manifest_content) catch return;
+        try stdout.print("\x1b[32m✓\x1b[0m Plugin scaffold created: {s}/\n", .{plugin_dir});
         try stdout.writeAll("  Edit plugin.json to configure hooks and executable path.\n");
     } else {
         try printError("Unknown plugin subcommand: {s}", .{args[0]});

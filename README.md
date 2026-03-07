@@ -362,7 +362,7 @@ volt export har request.volt            # HAR recording
 **Documentation generation:**
 
 ```bash
-volt docs api/ --format html            # Generate HTML API docs
+volt docs api/ --html -o docs.html      # Generate HTML API docs
 volt design spec.json generate          # Generate .volt files from OpenAPI
 volt design spec.json validate          # Validate OpenAPI spec
 ```
@@ -457,7 +457,7 @@ Extracted variables are available in subsequent requests within the same collect
 | Zero-config CI | `volt ci` (auto-detects 7 CI environments) |
 | Shell completions | `volt completions bash\|zsh\|fish\|powershell` |
 | Generate tests | `volt generate tests file.volt` |
-| Generate docs | `volt docs api/ --format html` |
+| Generate docs | `volt docs api/ --html -o docs.html` |
 | Response viewer | HTML-to-text, XML highlighting, timing waterfall |
 
 ### CLI Flags
