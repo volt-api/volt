@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://api-volt.com">Website</a> &nbsp;&middot;&nbsp;
   <a href="https://github.com/volt-api/volt"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/volt-api/volt?style=social"></a>
   <a href="https://github.com/volt-api/volt/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/volt-api/volt/total?label=downloads"></a>
 </p>
