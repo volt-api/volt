@@ -64,7 +64,7 @@ const Download = core.Download;
 const Quick = core.Quick;
 const App = @import("tui/app.zig").App;
 
-const version = "1.1.1";
+const version = "1.1.2";
 
 // ── Exit Codes (HTTPie-compatible) ──────────────────────────────────────
 const EXIT_SUCCESS: u8 = 0;

@@ -1,6 +1,6 @@
 .{
     .name = .volt,
-    .version = "1.1.1",
+    .version = "1.1.2",
     .fingerprint = 0xb2bb3dcf84a5f268,
     .paths = .{
         "build.zig",
