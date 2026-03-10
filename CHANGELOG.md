@@ -2,6 +2,11 @@
 
 All notable changes to Volt will be documented in this file.
 
+## [1.1.1] - 2026-03-10
+
+### Fixed
+- Fix macOS build: use `@hasField` for cross-platform `posix.timeval` field names in QUIC connection socket timeout (fields are `tv_sec`/`tv_usec` on Linux, `sec`/`usec` on macOS in Zig 0.14.1)
+
 ## [1.1.0] - 2026-03-07
 
 ### Added

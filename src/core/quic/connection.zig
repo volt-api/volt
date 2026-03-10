@@ -144,7 +144,10 @@ pub const QuicConnection = struct {
             _ = ws2.setsockopt(sock, ws2.SOL.SOCKET, ws2.SO.RCVTIMEO, @ptrCast(std.mem.asBytes(&timeout_ms)), @sizeOf(i32));
         } else {
             const timeout_opt: [@sizeOf(posix.timeval)]u8 = blk: {
-                const tv = posix.timeval{ .tv_sec = @intCast(DEFAULT_TIMEOUT_MS / 1000), .tv_usec = @intCast((DEFAULT_TIMEOUT_MS % 1000) * 1000) };
+                const tv: posix.timeval = if (comptime @hasField(posix.timeval, "tv_sec"))
+                    .{ .tv_sec = @intCast(DEFAULT_TIMEOUT_MS / 1000), .tv_usec = @intCast((DEFAULT_TIMEOUT_MS % 1000) * 1000) }
+                else
+                    .{ .sec = @intCast(DEFAULT_TIMEOUT_MS / 1000), .usec = @intCast((DEFAULT_TIMEOUT_MS % 1000) * 1000) };
                 break :blk @bitCast(tv);
             };
             posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout_opt) catch |err| {
