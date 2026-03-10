@@ -47,7 +47,7 @@ brew install volt-api/volt/volt
 scoop bucket add volt https://github.com/volt-api/scoop-volt && scoop install volt
 ```
 
-Or download a [pre-built binary](../../releases) — it's a single file, just put it on your PATH.
+Or download a [pre-built binary](https://github.com/volt-api/volt/releases) — it's a single file, just put it on your PATH.
 
 <details>
 <summary><strong>More install options</strong></summary>
@@ -626,7 +626,6 @@ Volt is production-ready for HTTP requests, testing, collections, import/export,
 ## Roadmap
 
 - [ ] Full HTTP/2 over TLS (ALPN negotiation)
-- [ ] CI results dashboard (web — first paid feature)
 - [x] Team secrets vault (E2E encrypted, multi-member)
 - [ ] VS Code extension (syntax highlighting)
 - [x] HTTP/3 (QUIC) support
