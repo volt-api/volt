@@ -120,7 +120,10 @@ pub const NativeWatcher = struct {
             if (self.inotify_fd) |fd| {
                 // Watch for modifications, creates, and moves in the directory.
                 const flags = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.MOVED_TO;
-                const wd = std.os.linux.inotify_add_watch(fd, path, flags);
+                // inotify_add_watch requires a null-terminated path
+                const path_z = try self.allocator.dupeZ(u8, path);
+                defer self.allocator.free(path_z);
+                const wd = std.os.linux.inotify_add_watch(fd, path_z, flags);
                 const signed_wd: i32 = @bitCast(@as(u32, @truncate(wd)));
                 if (signed_wd < 0) {
                     // If adding this specific watch fails, we still keep the

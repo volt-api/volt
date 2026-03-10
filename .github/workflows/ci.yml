@@ -10,6 +10,7 @@ jobs:
   test:
     name: Build & Test
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}

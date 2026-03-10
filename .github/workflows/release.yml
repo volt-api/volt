@@ -95,6 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Homebrew tap update
+        continue-on-error: true
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           gh workflow run update-formula.yml \
@@ -109,6 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Scoop bucket update
+        continue-on-error: true
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           gh workflow run update-manifest.yml \
